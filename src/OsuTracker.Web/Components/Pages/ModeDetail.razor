@@ -1,0 +1,214 @@
+@page "/modes/{Mode}"
+@using OsuTracker.Web.Data.Entities
+@using OsuTracker.Web.Services
+@using System.Globalization
+@inject ProgressQueryService Progress
+@inject NavigationManager Nav
+@rendermode InteractiveServer
+
+<PageTitle>@ModeName(_mode) · osu!PersonalTracker</PageTitle>
+
+<div class="mode-head">
+    <span class="mode-title" style="color:@Colour(_mode)">@ModeName(_mode)</span>
+    @if (_row is not null)
+    {
+        <span class="mode-sub">
+            @N(_row.Total) native difficulties · ranked + approved · converts excluded
+        </span>
+    }
+</div>
+
+<div class="filters">
+    @foreach (var m in Enum.GetValues<GameMode>())
+    {
+        <a class="f @(m == _mode ? "on" : "")" style="--mc:@Colour(m)" href="/modes/@Slug(m)">@ModeName(m)</a>
+    }
+    <span class="f-gap"></span>
+    <a class="f" href="/browse">browse @ModeName(_mode) →</a>
+</div>
+
+@if (_row is null || _bands is null)
+{
+    <p class="loading">Loading…</p>
+}
+else
+{
+    <div class="panel">
+        <div class="panel-title">
+            <span>Completion</span>
+            <b>@Pct(_row.PassedPercent)&#37; passed</b>
+        </div>
+        <div class="bar">
+            <i style="width:@W(_row.Passed, _row.Total); background:@Colour(_mode)"></i>
+            <i style="width:@W(_row.Attempted, _row.Total); background:var(--warn)"></i>
+            <i style="width:@W(_row.Untouched, _row.Total); background:var(--panel-2)"></i>
+        </div>
+        <div class="seg-legend">
+            <span><i style="background:@Colour(_mode)"></i>Passed @N(_row.Passed)</span>
+            <span>
+                <i style="background:var(--warn)"></i>Attempted @N(_row.Attempted)
+                <span class="approx" title="Playcounts carry no timestamps, so plays from before a map was ranked cannot be filtered out of this number.">≈</span>
+            </span>
+            <span><i style="background:var(--panel-2)"></i>Untouched @N(_row.Untouched)</span>
+        </div>
+    </div>
+
+    <div class="panel">
+        <div class="panel-title">
+            <span>By star rating</span>
+            @if (_wall is not null)
+            {
+                <b>your wall is @_wall</b>
+            }
+        </div>
+
+        <div class="histo">
+            @foreach (var b in _bands)
+            {
+                var h = _maxBand == 0 ? 0 : (int)Math.Round(118.0 * b.Total / _maxBand);
+                <div class="histo-col" title="@b.Label — @N(b.Passed) of @N(b.Total) passed">
+                    <div class="histo-pct">@(b.Total == 0 ? "—" : Pct(b.Passed * 100.0 / b.Total) + "%")</div>
+                    <div class="histo-stack" style="height:@(Math.Max(h, 3))px;">
+                        <i style="height:@Seg(b.Passed, b.Total); background:@Colour(_mode)"></i>
+                        <i style="height:@Seg(b.Attempted, b.Total); background:var(--warn)"></i>
+                        <i style="height:@Seg(b.Untouched, b.Total); background:var(--panel-2)"></i>
+                    </div>
+                    <div class="histo-x">@b.Label</div>
+                </div>
+            }
+        </div>
+        <div class="seg-legend">
+            <span>Bar height is how many maps exist in that band; fill is how far through it you are.</span>
+        </div>
+    </div>
+
+    <div class="split">
+        <div class="panel">
+            <div class="panel-title"><span>Pace</span><b>last 30 days</b></div>
+            @if (_recentPasses == 0)
+            {
+                <div class="pace-none">
+                    No qualifying passes in the last 30 days, so there is no rate to project from.
+                </div>
+            }
+            else
+            {
+                var perWeek = _recentPasses / (30 / 7.0);
+                var weeks = _row.Untouched + _row.Attempted <= 0 ? 0 : (_row.Untouched + _row.Attempted) / perWeek;
+                <div class="pace-big">+@N(_recentPasses)<span>/ 30d</span></div>
+                <div class="pace-sub">
+                    @Pct(perWeek) per week · @N(_row.Untouched + _row.Attempted) left
+                    @if (weeks > 0 && weeks < 52 * 200)
+                    {
+                        <br />
+                        <span>at this rate: @DateTimeOffset.UtcNow.AddDays(weeks * 7).ToString("yyyy-MM")</span>
+                    }
+                </div>
+            }
+        </div>
+
+        <div class="panel">
+            <div class="panel-title"><span>Nearly done</span><b>sets with one or two left</b></div>
+            @if (_nearly is null || _nearly.Count == 0)
+            {
+                <div class="pace-none">No partially-completed sets.</div>
+            }
+            else
+            {
+                <div class="nearly">
+                    @foreach (var s in _nearly)
+                    {
+                        <a class="nearly-row" href="https://osu.ppy.sh/beatmapsets/@s.BeatmapsetId" target="_blank" rel="noopener">
+                            <span class="nearly-title">@s.Title</span>
+                            <span class="nearly-count">@s.Done/@s.Total</span>
+                        </a>
+                    }
+                </div>
+            }
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter] public string Mode { get; set; } = "fruits";
+
+    private GameMode _mode = GameMode.Fruits;
+    private ModeProgress? _row;
+    private List<StarBand>? _bands;
+    private List<NearlyDoneSet>? _nearly;
+    private int _recentPasses;
+    private int _maxBand;
+    private string? _wall;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        _mode = Parse(Mode);
+
+        var all = await Progress.GetAllModesAsync();
+        _row = all.First(r => r.Mode == _mode);
+        _bands = await Progress.GetStarBandsAsync(_mode);
+        _nearly = await Progress.GetNearlyDoneAsync(_mode);
+        _recentPasses = await Progress.GetRecentPassCountAsync(_mode, 30);
+
+        _maxBand = _bands.Count == 0 ? 0 : _bands.Max(b => b.Total);
+        _wall = FindWall(_bands);
+    }
+
+    /// <summary>
+    /// The wall is the first band where the pass rate collapses relative to the bands
+    /// below it — not simply the lowest rate, which would always be the top band.
+    /// </summary>
+    private static string? FindWall(List<StarBand> bands)
+    {
+        var withData = bands.Where(b => b.Total >= 50).ToList();
+        if (withData.Count < 3) return null;
+
+        for (var i = 1; i < withData.Count; i++)
+        {
+            var prev = withData[i - 1];
+            var cur = withData[i];
+            if (prev.Total == 0 || cur.Total == 0) continue;
+
+            var prevRate = prev.Passed * 100.0 / prev.Total;
+            var curRate = cur.Passed * 100.0 / cur.Total;
+
+            if (prevRate >= 10 && curRate < prevRate / 2) return cur.Label;
+        }
+        return null;
+    }
+
+    private static string N(int v) => v.ToString("N0", CultureInfo.InvariantCulture);
+    private static string Pct(double v) => v.ToString("F1", CultureInfo.InvariantCulture);
+
+    private static string W(int part, int total) =>
+        (total == 0 ? 0 : part * 100.0 / total).ToString("F3", CultureInfo.InvariantCulture) + "%";
+
+    private static string Seg(int part, int total) =>
+        (total == 0 ? 0 : part * 100.0 / total).ToString("F2", CultureInfo.InvariantCulture) + "%";
+
+    private static GameMode Parse(string s) => s.ToLowerInvariant() switch
+    {
+        "osu" or "standard" => GameMode.Osu,
+        "taiko" => GameMode.Taiko,
+        "mania" => GameMode.Mania,
+        _ => GameMode.Fruits
+    };
+
+    private static string Slug(GameMode m) => m switch
+    {
+        GameMode.Osu => "osu", GameMode.Taiko => "taiko",
+        GameMode.Fruits => "fruits", GameMode.Mania => "mania", _ => "fruits"
+    };
+
+    private static string ModeName(GameMode m) => m switch
+    {
+        GameMode.Osu => "osu!", GameMode.Taiko => "osu!taiko",
+        GameMode.Fruits => "osu!catch", GameMode.Mania => "osu!mania", _ => m.ToString()
+    };
+
+    private static string Colour(GameMode m) => m switch
+    {
+        GameMode.Osu => "var(--osu)", GameMode.Taiko => "var(--taiko)",
+        GameMode.Fruits => "var(--fruits)", GameMode.Mania => "var(--mania)", _ => "var(--muted)"
+    };
+}

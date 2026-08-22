@@ -1,0 +1,200 @@
+@page "/browse"
+@using OsuTracker.Web.Data.Entities
+@using OsuTracker.Web.Services
+@using System.Globalization
+@inject BrowseQueryService Query
+@rendermode InteractiveServer
+
+<PageTitle>Browse · osu!PersonalTracker</PageTitle>
+
+<div class="filters">
+    @foreach (var m in Enum.GetValues<GameMode>())
+    {
+        <button class="f @(m == _filter.Mode ? "on" : "")" style="--mc:@Colour(m)"
+                @onclick="() => SetMode(m)">@ModeName(m)</button>
+    }
+
+    <span class="f-gap"></span>
+
+    @foreach (var st in new[] { BrowseStatus.All, BrowseStatus.Untouched, BrowseStatus.Attempted, BrowseStatus.Passed, BrowseStatus.PreRankOnly })
+    {
+        var n = _counts?.GetValueOrDefault(st);
+        <button class="f @(st == _filter.Status ? "on" : "")" style="--mc:@Colour(_filter.Mode)"
+                @onclick="() => SetStatus(st)">
+            @StatusName(st)@(n is null ? "" : $" {N(n.Value)}")
+        </button>
+    }
+
+    <span class="f-gap"></span>
+
+    <select class="f" @onchange="SetSort">
+        <option value="StarsAsc" selected="@(_filter.Sort == BrowseSort.StarsAsc)">easiest first</option>
+        <option value="StarsDesc" selected="@(_filter.Sort == BrowseSort.StarsDesc)">hardest first</option>
+        <option value="PlaysDesc" selected="@(_filter.Sort == BrowseSort.PlaysDesc)">most played</option>
+        <option value="RankedDesc" selected="@(_filter.Sort == BrowseSort.RankedDesc)">newest ranked</option>
+        <option value="RankedAsc" selected="@(_filter.Sort == BrowseSort.RankedAsc)">oldest ranked</option>
+    </select>
+
+    <input class="f f-search" type="search" placeholder="search title, artist, mapper, difficulty…"
+           value="@_filter.Search" @onchange="SetSearch" />
+</div>
+
+@if (_result is null)
+{
+    <p class="loading">Loading…</p>
+}
+else
+{
+    <div class="result-line">
+        @N(_result.Total) results
+        @if (_filter.Status == BrowseStatus.Untouched && _filter.Sort == BrowseSort.StarsAsc)
+        {
+            <span class="hint">· easiest never-passed first — the top row is your next map</span>
+        }
+    </div>
+
+    <div class="table-wrap">
+        <table class="dt">
+            <thead>
+                <tr>
+                    <th>Beatmap</th><th>Difficulty</th><th class="r">★</th>
+                    <th>Status</th><th class="r">Grade</th><th class="r">Acc</th>
+                    <th>Mods</th><th class="r">Plays</th><th class="r">Ranked</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var r in _result.Rows)
+                {
+                    <tr>
+                        <td>
+                            <a class="t-title" href="https://osu.ppy.sh/beatmapsets/@r.BeatmapsetId#@ModeSlug(_filter.Mode)/@r.BeatmapId"
+                               target="_blank" rel="noopener">@r.Title</a>
+                            <div class="t-artist">@r.Artist · @r.Creator</div>
+                        </td>
+                        <td class="mono">@r.Difficulty</td>
+                        <td class="r mono">@r.StarRating.ToString("F2", CultureInfo.InvariantCulture)</td>
+                        <td><span class="chip @ChipClass(r.State)">@StatusName(r.State)</span></td>
+                        <td class="r">
+                            @if (r.Grade is null)
+                            {
+                                <span class="dim">@Dash</span>
+                            }
+                            else
+                            {
+                                <span class="grade g-@r.Grade.ToLowerInvariant()">@r.Grade</span>
+                            }
+                        </td>
+                        <td class="r mono">
+                            @(r.Accuracy is null
+                                ? Dash
+                                : (r.Accuracy.Value * 100).ToString("F2", CultureInfo.InvariantCulture) + "%")
+                        </td>
+                        <td class="mono mods">
+                            @if (string.IsNullOrEmpty(r.Mods))
+                            {
+                                <span class="dim">@Dash</span>
+                            }
+                            else
+                            {
+                                @foreach (var mod in r.Mods.Split(','))
+                                {
+                                    <span class="@(mod == "NF" ? "mod-nf" : "mod")">@mod</span>
+                                }
+                            }
+                        </td>
+                        <td class="r mono">@N(r.PlayCount)</td>
+                        <td class="r mono dim">@(r.RankedDate?.ToString("yyyy-MM-dd") ?? "—")</td>
+                    </tr>
+                }
+                @if (_result.Rows.Count == 0)
+                {
+                    <tr><td colspan="9" class="empty">Nothing matches those filters.</td></tr>
+                }
+            </tbody>
+        </table>
+    </div>
+
+    @if (_result.PageCount > 1)
+    {
+        <div class="pager">
+            <button class="f" disabled="@(_filter.Page == 0)" @onclick="() => GoTo(_filter.Page - 1)">← prev</button>
+            <span class="mono">page @(_filter.Page + 1) of @N(_result.PageCount)</span>
+            <button class="f" disabled="@(_filter.Page >= _result.PageCount - 1)" @onclick="() => GoTo(_filter.Page + 1)">next →</button>
+        </div>
+    }
+}
+
+@code {
+    private BrowseFilter _filter = new();
+    private BrowseResult? _result;
+    private Dictionary<BrowseStatus, int>? _counts;
+
+    private const string Dash = "—";
+
+    protected override async Task OnInitializedAsync() => await ReloadAsync();
+
+    private async Task ReloadAsync()
+    {
+        _counts = await Query.GetStatusCountsAsync(_filter.Mode);
+        _result = await Query.QueryAsync(_filter);
+    }
+
+    // Any filter change resets to page 0 — staying on page 40 of a result set that
+    // just shrank to 3 pages shows an empty table and reads as a bug.
+    private async Task SetMode(GameMode m) { _filter = _filter with { Mode = m, Page = 0 }; await ReloadAsync(); }
+    private async Task SetStatus(BrowseStatus s) { _filter = _filter with { Status = s, Page = 0 }; await ReloadAsync(); }
+    private async Task GoTo(int page) { _filter = _filter with { Page = page }; _result = await Query.QueryAsync(_filter); }
+
+    private async Task SetSort(ChangeEventArgs e)
+    {
+        if (Enum.TryParse<BrowseSort>(e.Value?.ToString(), out var s))
+        {
+            _filter = _filter with { Sort = s, Page = 0 };
+            _result = await Query.QueryAsync(_filter);
+        }
+    }
+
+    private async Task SetSearch(ChangeEventArgs e)
+    {
+        _filter = _filter with { Search = e.Value?.ToString(), Page = 0 };
+        _result = await Query.QueryAsync(_filter);
+    }
+
+    private static string N(int v) => v.ToString("N0", CultureInfo.InvariantCulture);
+
+    private static string ChipClass(BrowseStatus s) => s switch
+    {
+        BrowseStatus.Passed => "passed",
+        BrowseStatus.Attempted => "attempted",
+        BrowseStatus.PreRankOnly => "prerank",
+        _ => "untouched"
+    };
+
+    private static string StatusName(BrowseStatus s) => s switch
+    {
+        BrowseStatus.All => "All",
+        BrowseStatus.Untouched => "Untouched",
+        BrowseStatus.Attempted => "Attempted",
+        BrowseStatus.Passed => "Passed",
+        BrowseStatus.PreRankOnly => "Pre-rank",
+        _ => s.ToString()
+    };
+
+    private static string ModeName(GameMode m) => m switch
+    {
+        GameMode.Osu => "osu!", GameMode.Taiko => "taiko",
+        GameMode.Fruits => "catch", GameMode.Mania => "mania", _ => m.ToString()
+    };
+
+    private static string ModeSlug(GameMode m) => m switch
+    {
+        GameMode.Osu => "osu", GameMode.Taiko => "taiko",
+        GameMode.Fruits => "fruits", GameMode.Mania => "mania", _ => "osu"
+    };
+
+    private static string Colour(GameMode m) => m switch
+    {
+        GameMode.Osu => "var(--osu)", GameMode.Taiko => "var(--taiko)",
+        GameMode.Fruits => "var(--fruits)", GameMode.Mania => "var(--mania)", _ => "var(--muted)"
+    };
+}

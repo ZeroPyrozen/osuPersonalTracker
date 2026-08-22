@@ -1,0 +1,244 @@
+@page "/badge"
+@using OsuTracker.Web.Badges
+@using OsuTracker.Web.Data.Entities
+@using OsuTracker.Web.Services
+@using System.Globalization
+@inject BadgeService Badges
+@inject NavigationManager Nav
+@inject IJSRuntime JS
+@rendermode InteractiveServer
+
+<PageTitle>Badge · osu!PersonalTracker</PageTitle>
+
+<div class="mode-head">
+    <span class="mode-title">Badge</span>
+    <span class="mode-sub">a shareable image of your completion, served straight from this tracker</span>
+</div>
+
+<div class="panel">
+    <div class="panel-title"><span>Preview</span><b>@_width × @_height px</b></div>
+    <div class="badge-stage @(_theme == BadgeTheme.Light ? "on-light" : "")">
+        <img class="badge-preview" src="@PreviewUrl" width="@_width" height="@_height"
+             alt="osu!PersonalTracker completion badge preview" />
+    </div>
+    <div class="badge-actions">
+        <a class="f on" style="--mc: @Accent" href="@DownloadUrl(2)" target="_blank" rel="noopener">download png @@2x</a>
+        <a class="f" href="@DownloadUrl(1)" target="_blank" rel="noopener">png @@1x</a>
+        <a class="f" href="@DownloadUrl(4)" target="_blank" rel="noopener">png @@4x</a>
+        <a class="f" href="@AbsoluteUrl(false)" target="_blank" rel="noopener">open svg</a>
+        <span class="f-gap"></span>
+        <button class="f" @onclick="RefreshAsync">refresh data</button>
+    </div>
+</div>
+
+<div class="split">
+    <div class="panel">
+        <div class="panel-title"><span>Scope</span><b>what the badge counts</b></div>
+        <div class="filters">
+            <button class="f @(_mode is null ? "on" : "")" @onclick="() => SetMode(null)">all modes</button>
+            @foreach (var m in Enum.GetValues<GameMode>())
+            {
+                <button class="f @(_mode == m ? "on" : "")" style="--mc:@BadgePalette.ModeColour(m)"
+                        @onclick="() => SetMode(m)">@BadgePalette.ModeName(m)</button>
+            }
+        </div>
+        <div class="badge-note">
+            @if (_mode is null)
+            {
+                <text>The strip along the bottom breaks the total down per mode.</text>
+            }
+            else
+            {
+                <text>A single mode swaps that strip for its star-rating bands, so the wall shows.</text>
+            }
+        </div>
+    </div>
+
+    <div class="panel">
+        <div class="panel-title"><span>Look</span><b>layout, theme, accent</b></div>
+        <div class="filters">
+            <button class="f @(_layout == BadgeLayout.Banner ? "on" : "")" @onclick="() => SetLayout(BadgeLayout.Banner)">banner</button>
+            <button class="f @(_layout == BadgeLayout.Slim ? "on" : "")" @onclick="() => SetLayout(BadgeLayout.Slim)">slim</button>
+            <span class="f-gap"></span>
+            <button class="f @(_theme == BadgeTheme.Dark ? "on" : "")" @onclick="() => Set(() => _theme = BadgeTheme.Dark)">dark</button>
+            <button class="f @(_theme == BadgeTheme.Light ? "on" : "")" @onclick="() => Set(() => _theme = BadgeTheme.Light)">light</button>
+        </div>
+        <div class="filters">
+            <button class="sw @(_accent is null ? "on" : "")" title="match the mode" @onclick="() => Set(() => _accent = null)">auto</button>
+            @foreach (var (name, hex) in Swatches)
+            {
+                <button class="sw @(_accent == name ? "on" : "")" style="background:@hex" title="@name"
+                        @onclick="() => Set(() => _accent = name)"></button>
+            }
+        </div>
+    </div>
+</div>
+
+<div class="panel">
+    <div class="panel-title"><span>Embed</span><b>paste one of these</b></div>
+
+    <div class="badge-url">
+        <label>Public base URL</label>
+        <input class="f f-search" value="@_baseUrl" @onchange="OnBaseChanged"
+               placeholder="https://tracker.example.com" />
+    </div>
+
+    @foreach (var snippet in Snippets())
+    {
+        <div class="snippet">
+            <span class="snippet-k">@snippet.Label</span>
+            <code class="snippet-v">@snippet.Value</code>
+            <button class="f" @onclick="() => CopyAsync(snippet.Value)">
+                @(_copied == snippet.Label ? "copied" : "copy")
+            </button>
+        </div>
+    }
+
+    <div class="badge-note">
+        osu! renders profile images through its own proxy, which only re-serves raster
+        formats — so use the <b>.png</b> URL there, not the SVG. Either way the URL has to be
+        reachable from the public internet; a <code>localhost</code> address only works on this machine.
+    </div>
+</div>
+
+@if (_snap is not null)
+{
+    <div class="stat-strip">
+        <div class="stat">
+            <div class="k">On the badge</div>
+            <div class="v">@N(_snap.Passed)<small> / @N(_snap.Total)</small></div>
+        </div>
+        <div class="stat">
+            <div class="k">Passed</div>
+            <div class="v">@Pct(_snap.PassedPercent)<small>%</small></div>
+        </div>
+        <div class="stat">
+            <div class="k">Last 30 days</div>
+            <div class="v">+@N(_snap.RecentPasses)</div>
+        </div>
+        <div class="stat">
+            <div class="k">Snapshot</div>
+            <div class="v"><small>@_snap.GeneratedAt.ToString("HH:mm:ss", CultureInfo.InvariantCulture) UTC</small></div>
+        </div>
+    </div>
+}
+
+@code {
+    private GameMode? _mode;
+    private BadgeLayout _layout = BadgeLayout.Banner;
+    private BadgeTheme _theme = BadgeTheme.Dark;
+    private string? _accent;
+
+    private BadgeSnapshot? _snap;
+    private string _baseUrl = "";
+    private string? _copied;
+
+    // Bumped on every change so the browser refetches rather than showing the image it
+    // already has for a URL whose numbers have since moved.
+    private int _nonce;
+
+    private static readonly (string Name, string Hex)[] Swatches =
+    [
+        ("osu", "#F0559C"), ("taiko", "#F2764B"), ("fruits", "#9BD64A"),
+        ("mania", "#7B8CF5"), ("gold", "#E9D27A"), ("mint", "#3FB57A")
+    ];
+
+    // Both layouts are 880 wide on purpose — a badge that changes width when you switch
+    // layout would need every embed snippet rewritten.
+    private const int _width = 880;
+    private int _height => _layout == BadgeLayout.Slim ? 92 : 210;
+
+    private string Accent => _accent is null
+        ? BadgePalette.ModeColour(_mode ?? GameMode.Osu)
+        : Swatches.FirstOrDefault(s => s.Name == _accent).Hex ?? "#F0559C";
+
+    protected override async Task OnInitializedAsync()
+    {
+        _baseUrl = Nav.BaseUri.TrimEnd('/');
+        _snap = await Badges.GetSnapshotAsync(_mode);
+    }
+
+    private async Task SetMode(GameMode? mode)
+    {
+        _mode = mode;
+        _copied = null;
+        _nonce++;
+        _snap = await Badges.GetSnapshotAsync(mode);
+    }
+
+    private void SetLayout(BadgeLayout layout) => Set(() => _layout = layout);
+
+    private void Set(Action change)
+    {
+        change();
+        _copied = null;
+        _nonce++;
+    }
+
+    private async Task RefreshAsync()
+    {
+        _snap = await Badges.GetSnapshotAsync(_mode, force: true);
+        _nonce++;
+    }
+
+    private async Task CopyAsync(string value)
+    {
+        // A module, not a global: the copy helper is only ever needed on this page.
+        var js = await JS.InvokeAsync<IJSObjectReference>("import", "./Components/Pages/Badge.razor.js");
+        await using (js)
+        {
+            await js.InvokeVoidAsync("copy", value);
+        }
+        _copied = Snippets().FirstOrDefault(s => s.Value == value).Label;
+    }
+
+    private void OnBaseChanged(ChangeEventArgs e)
+    {
+        _baseUrl = (e.Value?.ToString() ?? "").Trim().TrimEnd('/');
+        _copied = null;
+    }
+
+    /// <summary>Query string shared by the preview, the downloads and the snippets.</summary>
+    private string Query(bool withNonce, int scale = 0, bool download = false)
+    {
+        var parts = new List<string>();
+        if (_mode is not null) parts.Add($"mode={BadgeSlug(_mode.Value)}");
+        if (_layout == BadgeLayout.Slim) parts.Add("layout=slim");
+        if (_theme == BadgeTheme.Light) parts.Add("theme=light");
+        if (_accent is not null) parts.Add($"accent={_accent}");
+        if (scale > 0 && scale != 2) parts.Add($"scale={scale}");
+        if (download) parts.Add("download=1");
+        if (withNonce) parts.Add($"v={_nonce}");
+        return parts.Count == 0 ? "" : "?" + string.Join("&", parts);
+    }
+
+    private string PreviewUrl => $"/badge.svg{Query(withNonce: true)}";
+
+    private string DownloadUrl(int scale) => $"/badge.png{Query(withNonce: true, scale: scale, download: true)}";
+
+    private string AbsoluteUrl(bool png, int scale = 0) =>
+        $"{_baseUrl}/badge.{(png ? "png" : "svg")}{Query(withNonce: false, scale: scale)}";
+
+    private (string Label, string Value)[] Snippets()
+    {
+        var png = AbsoluteUrl(png: true);
+        var svg = AbsoluteUrl(png: false);
+        return
+        [
+            ("png url", png),
+            ("svg url", svg),
+            ("bbcode", $"[img]{png}[/img]"),
+            ("markdown", $"![osu!PersonalTracker]({png})"),
+            ("html", $"<img src=\"{png}\" width=\"{_width}\" height=\"{_height}\" alt=\"osu! completion\">")
+        ];
+    }
+
+    private static string BadgeSlug(GameMode m) => m switch
+    {
+        GameMode.Osu => "osu", GameMode.Taiko => "taiko",
+        GameMode.Fruits => "fruits", GameMode.Mania => "mania", _ => "all"
+    };
+
+    private static string N(int v) => v.ToString("N0", CultureInfo.InvariantCulture);
+    private static string Pct(double v) => v.ToString("F1", CultureInfo.InvariantCulture);
+}

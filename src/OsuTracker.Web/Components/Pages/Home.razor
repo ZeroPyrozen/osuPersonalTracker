@@ -1,0 +1,152 @@
+@page "/"
+@using OsuTracker.Web.Data.Entities
+@using OsuTracker.Web.Services
+@using System.Globalization
+@inject ProgressQueryService Progress
+@rendermode InteractiveServer
+
+<PageTitle>osu!PersonalTracker</PageTitle>
+
+@if (_rows is null)
+{
+    <p class="loading">Loading progress…</p>
+}
+else
+{
+    @if (_pending.Count > 0)
+    {
+        <div class="notice">
+            <b>@string.Join(", ", _pending.Select(r => ModeName(r.Mode))) not yet backfilled.</b>
+            Playcounts are in, so Attempted is real, but every map in @(_pending.Count == 1 ? "that mode" : "those modes")
+            reads as unpassed until scores are fetched — roughly
+            @N(_pending.Sum(r => r.Attempted)) requests. Run <code>dotnet run -- sync scores</code>.
+        </div>
+    }
+
+    <div class="stat-strip">
+        <div class="stat">
+            <div class="k">Ranked + approved</div>
+            <div class="v">@N(_totalMaps)</div>
+        </div>
+        <div class="stat">
+            <div class="k">Passed</div>
+            <div class="v">@N(_totalPassed)</div>
+        </div>
+        <div class="stat">
+            <div class="k">Attempted</div>
+            <div class="v">@N(_totalAttempted)</div>
+        </div>
+        <div class="stat">
+            <div class="k">Untouched</div>
+            <div class="v">@N(_totalUntouched)</div>
+        </div>
+        <div class="stat">
+            <div class="k">Overall</div>
+            <div class="v">@Pct(_totalMaps == 0 ? 0 : _totalPassed * 100.0 / _totalMaps)<small>%</small></div>
+        </div>
+    </div>
+
+    <div class="mode-grid">
+        @foreach (var r in _rows.OrderByDescending(x => x.PassedPercent).ThenByDescending(x => x.PlayedPercent))
+        {
+            var colour = ModeColour(r.Mode);
+            <a class="mode-card" href="/modes/@Slug(r.Mode)" style="--mc: @colour">
+                <div class="mc-head">
+                    <i class="dot" style="background:@colour"></i>
+                    <span class="mc-name">@ModeName(r.Mode)</span>
+                </div>
+                <div class="mc-body">
+                    <svg class="ring" width="78" height="78" viewBox="0 0 78 78" role="img"
+                         aria-label="@ModeName(r.Mode) @Pct(r.PassedPercent) percent passed">
+                        <circle class="track" cx="39" cy="39" r="30" stroke-width="7"></circle>
+                        <circle class="fill" cx="39" cy="39" r="30" stroke-width="7"
+                                stroke-dasharray="188.5"
+                                stroke-dashoffset="@Offset(r.PassedPercent)"></circle>
+                        <text x="39" y="44" text-anchor="middle">@Pct(r.PassedPercent)%</text>
+                    </svg>
+                    <div>
+                        <div class="mc-frac"><b>@N(r.Passed)</b><span> / @N(r.Total)</span></div>
+                        <div class="mc-sub">@N(r.Attempted) attempted</div>
+                    </div>
+                </div>
+            </a>
+        }
+    </div>
+
+    @foreach (var r in _rows.OrderByDescending(x => x.PlayedPercent))
+    {
+        var colour = ModeColour(r.Mode);
+        <div class="panel">
+            <div class="panel-title">
+                <span>@ModeName(r.Mode)</span>
+                <b>@Pct(r.PlayedPercent)&#37; touched · @N(r.Untouched) never loaded</b>
+            </div>
+            <div class="bar">
+                <i style="width:@W(r.Passed, r.Total); background:@colour"></i>
+                <i style="width:@W(r.Attempted, r.Total); background:var(--warn)"></i>
+                <i style="width:@W(r.Untouched, r.Total); background:var(--panel-2)"></i>
+            </div>
+            <div class="seg-legend">
+                <span><i style="background:@colour"></i>Passed @N(r.Passed)</span>
+                <span><i style="background:var(--warn)"></i>Attempted @N(r.Attempted) <span title="Playcounts carry no timestamps, so pre-rank plays cannot be filtered out of this number.">≈</span></span>
+                <span><i style="background:var(--panel-2)"></i>Untouched @N(r.Untouched)</span>
+            </div>
+        </div>
+    }
+}
+
+@code {
+    private List<ModeProgress>? _rows;
+
+    // A mode with plays but zero passes has not been backfilled yet. Saying so is the
+    // difference between "you have never passed an osu! map" and the truth, which is
+    // that the job simply has not run for that mode.
+    private List<ModeProgress> _pending = [];
+    private int _totalMaps, _totalPassed, _totalAttempted, _totalUntouched;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _rows = await Progress.GetAllModesAsync();
+        _totalMaps = _rows.Sum(r => r.Total);
+        _totalPassed = _rows.Sum(r => r.Passed);
+        _totalAttempted = _rows.Sum(r => r.Attempted);
+        _totalUntouched = _rows.Sum(r => r.Untouched);
+        _pending = _rows.Where(r => r.Passed == 0 && r.Attempted > 0).ToList();
+    }
+
+    // Invariant culture throughout: a locale using "." as the thousands separator
+    // renders 142,560 as "142.560", which reads as a decimal.
+    private static string N(int v) => v.ToString("N0", CultureInfo.InvariantCulture);
+    private static string Pct(double v) => v.ToString("F1", CultureInfo.InvariantCulture);
+
+    private static string W(int part, int total) =>
+        (total == 0 ? 0 : part * 100.0 / total).ToString("F3", CultureInfo.InvariantCulture) + "%";
+
+    /// <summary>Circumference is 2πr with r=30 ≈ 188.5; offset shrinks as progress grows.</summary>
+    private static string Offset(double percent) =>
+        (188.5 * (1 - Math.Clamp(percent, 0, 100) / 100.0)).ToString("F1", CultureInfo.InvariantCulture);
+
+    private static string ModeName(GameMode m) => m switch
+    {
+        GameMode.Osu => "osu!",
+        GameMode.Taiko => "osu!taiko",
+        GameMode.Fruits => "osu!catch",
+        GameMode.Mania => "osu!mania",
+        _ => m.ToString()
+    };
+
+    private static string Slug(GameMode m) => m switch
+    {
+        GameMode.Osu => "osu", GameMode.Taiko => "taiko",
+        GameMode.Fruits => "fruits", GameMode.Mania => "mania", _ => "fruits"
+    };
+
+    private static string ModeColour(GameMode m) => m switch
+    {
+        GameMode.Osu => "var(--osu)",
+        GameMode.Taiko => "var(--taiko)",
+        GameMode.Fruits => "var(--fruits)",
+        GameMode.Mania => "var(--mania)",
+        _ => "var(--muted)"
+    };
+}

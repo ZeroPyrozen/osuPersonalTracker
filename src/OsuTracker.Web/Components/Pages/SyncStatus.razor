@@ -1,0 +1,119 @@
+@page "/sync"
+@using OsuTracker.Web.Data
+@using OsuTracker.Web.Data.Entities
+@using OsuTracker.Web.OsuApi
+@using System.Globalization
+@using Microsoft.EntityFrameworkCore
+@inject IDbContextFactory<TrackerDbContext> DbFactory
+@inject OsuRateLimiter Limiter
+@rendermode InteractiveServer
+
+<PageTitle>Sync · osu!PersonalTracker</PageTitle>
+
+<div class="panel">
+    <div class="panel-title">
+        <span>Rate limit budget</span>
+        <b>@_permits / 60 available this minute</b>
+    </div>
+    <div class="budget">
+        @for (var i = 0; i < 20; i++)
+        {
+            var filled = i < (int)Math.Round(_permits / 3.0);
+            <i class="@(filled ? "used" : "")"></i>
+        }
+    </div>
+    <div class="seg-legend">
+        <span>Measured in Phase 1: the API advertises 1,200/min, but sustained paging above
+              ~200/min drops the connection outright — with no 429 to warn you first.</span>
+    </div>
+</div>
+
+<div class="panel">
+    <div class="panel-title"><span>Jobs</span><b>@_jobs.Count recorded</b></div>
+
+    @if (_jobs.Count == 0)
+    {
+        <div class="pace-none">No job has run yet.</div>
+    }
+    else
+    {
+        @foreach (var j in _jobs)
+        {
+            <div class="job">
+                <div>
+                    <div class="job-name">@j.Name</div>
+                    <div class="job-meta">@(j.Cursor is null ? "no cursor" : $"cursor: {Trim(j.Cursor)}")</div>
+                </div>
+                <div><span class="chip @ChipClass(j.State)">@j.State</span></div>
+                <div>
+                    <div class="bar">
+                        <i style="width:@Pct(j); background:@BarColour(j.State)"></i>
+                    </div>
+                    <div class="job-prog">
+                        @N(j.ItemsDone)@(j.ItemsTotal > 0 ? $" / {N(j.ItemsTotal)}" : "") items
+                        @if (j.Error is not null)
+                        {
+                            <span class="job-err">· @j.Error</span>
+                        }
+                    </div>
+                </div>
+                <div class="job-when">@Ago(j.LastSuccessAt ?? j.LastRunAt)</div>
+            </div>
+        }
+    }
+</div>
+
+<div class="panel">
+    <div class="panel-title"><span>Run manually</span><b>from the project directory</b></div>
+    <pre class="cmds">dotnet run -- sync catalog      # monthly: refresh ranked + approved
+dotnet run -- sync playcounts   # daily: refresh the backfill queue
+dotnet run -- sync scores       # once: backfill, --resume after a crash
+dotnet run -- sync recent       # every few hours: keeps everything current</pre>
+</div>
+
+@code {
+    private List<SyncJob> _jobs = [];
+    private int _permits;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        _jobs = await db.SyncJobs.OrderBy(j => j.Name).ToListAsync();
+        _permits = Limiter.AvailablePermits;
+    }
+
+    private static string N(int v) => v.ToString("N0", CultureInfo.InvariantCulture);
+    private static string Trim(string s) => s.Length <= 28 ? s : s[..28] + "…";
+
+    private static string Pct(SyncJob j) =>
+        (j.ItemsTotal <= 0
+            ? (j.State == SyncJobState.Completed ? 100 : 0)
+            : Math.Clamp(j.ItemsDone * 100.0 / j.ItemsTotal, 0, 100))
+        .ToString("F2", CultureInfo.InvariantCulture) + "%";
+
+    private static string BarColour(SyncJobState s) => s switch
+    {
+        SyncJobState.Failed => "var(--crit)",
+        SyncJobState.Running => "var(--good)",
+        SyncJobState.Paused => "var(--warn)",
+        _ => "var(--panel-2)"
+    };
+
+    private static string ChipClass(SyncJobState s) => s switch
+    {
+        SyncJobState.Completed or SyncJobState.Running => "passed",
+        SyncJobState.Failed => "prerank",
+        SyncJobState.Paused => "attempted",
+        _ => "untouched"
+    };
+
+    private static string Ago(DateTimeOffset? when)
+    {
+        if (when is null) return "never";
+        var d = DateTimeOffset.UtcNow - when.Value;
+        if (d.TotalMinutes < 1) return "just now";
+        if (d.TotalHours < 1) return $"{(int)d.TotalMinutes}m ago";
+        if (d.TotalDays < 1) return $"{(int)d.TotalHours}h ago";
+        return $"{(int)d.TotalDays}d ago";
+    }
+}

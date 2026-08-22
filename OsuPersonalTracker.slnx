@@ -1,0 +1,12 @@
+<Solution>
+  <Folder Name="/solution items/">
+    <File Path=".gitignore" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/OsuTracker.Web/OsuTracker.Web.csproj" />
+  </Folder>
+  <Folder Name="/spike/">
+    <File Path="spike/README.md" />
+    <Project Path="spike/OsuTracker.Spike/OsuTracker.Spike.csproj" />
+  </Folder>
+</Solution>

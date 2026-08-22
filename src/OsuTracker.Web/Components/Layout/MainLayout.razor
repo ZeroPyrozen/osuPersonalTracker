@@ -1,0 +1,31 @@
+@inherits LayoutComponentBase
+
+<div class="shell">
+    <header class="appnav">
+        <div class="brand">osu<span>!</span>PersonalTracker</div>
+        <nav>
+            <NavLink href="" Match="NavLinkMatch.All" ActiveClass="active">Dashboard</NavLink>
+            <NavLink href="modes/fruits" ActiveClass="active">Modes</NavLink>
+            <NavLink href="browse" ActiveClass="active">Browse</NavLink>
+            <NavLink href="badge" ActiveClass="active">Badge</NavLink>
+            <NavLink href="sync" ActiveClass="active">Sync</NavLink>
+        </nav>
+        <div class="spacer"></div>
+        <div class="syncbadge">
+            <i class="pulse @(SyncFresh ? "" : "stale")"></i>
+            @SyncLabel
+        </div>
+    </header>
+
+    @Body
+</div>
+
+<div id="blazor-error-ui" data-nosnippet>
+    Something went wrong. <a href="." class="reload">Reload</a>
+</div>
+
+@code {
+    [CascadingParameter] public string? SyncStatus { get; set; }
+    private bool SyncFresh => true;
+    private string SyncLabel => SyncStatus ?? "local";
+}

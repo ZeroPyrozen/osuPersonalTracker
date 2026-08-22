@@ -427,3 +427,27 @@ FodyWeavers.xsd
 *.msix
 *.msm
 *.msp
+
+##
+## osu!PersonalTracker — project specific
+##
+
+# SQLite database: contains your personal osu! play history and is ~50 MB.
+# The schema is reproducible from the EF Core migrations in Data/Migrations.
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# Local configuration overrides. osu! ClientId / ClientSecret / UserId belong in
+# dotnet user-secrets (stored outside the repo), never in a committed appsettings file.
+appsettings.Local.json
+appsettings.*.Local.json
+secrets.json
+
+# Personal Claude Code settings (launch.json is shared, settings.local.json is not)
+.claude/settings.local.json
+
+# Sync / backfill run output (also matched by *.log above)
+*.log
