@@ -10,9 +10,14 @@
 
 <PageTitle>Sync · osu!PersonalTracker</PageTitle>
 
+<div class="mode-head">
+    <h1 class="mode-title" tabindex="-1">Sync</h1>
+    <span class="mode-sub">what the jobs have fetched, and what the API budget allows</span>
+</div>
+
 <div class="panel">
     <div class="panel-title">
-        <span>Rate limit budget</span>
+        <h2>Rate limit budget</h2>
         <b>@_permits / 60 available this minute</b>
     </div>
     <div class="budget">
@@ -29,7 +34,7 @@
 </div>
 
 <div class="panel">
-    <div class="panel-title"><span>Jobs</span><b>@_jobs.Count recorded</b></div>
+    <div class="panel-title"><h2>Jobs</h2><b>@_jobs.Count recorded</b></div>
 
     @if (_jobs.Count == 0)
     {
@@ -64,7 +69,7 @@
 </div>
 
 <div class="panel">
-    <div class="panel-title"><span>Run manually</span><b>from the project directory</b></div>
+    <div class="panel-title"><h2>Run manually</h2><b>from the project directory</b></div>
     <pre class="cmds">dotnet run -- sync catalog      # monthly: refresh ranked + approved
 dotnet run -- sync playcounts   # daily: refresh the backfill queue
 dotnet run -- sync scores       # once: backfill, --resume after a crash

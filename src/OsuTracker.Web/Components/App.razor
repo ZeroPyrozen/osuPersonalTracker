@@ -6,6 +6,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <base href="/" />
     <title>osu!PersonalTracker</title>
+    <!-- Dark chrome around a dark app: without this, mobile browsers frame it in white. -->
+    <meta name="theme-color" content="#131019" />
+    <link rel="icon" href="@Assets["favicon.svg"]" type="image/svg+xml" />
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,700;12..96,800&family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap">
@@ -20,6 +23,37 @@
     <Routes />
     <ReconnectModal />
     <script src="@Assets["_framework/blazor.web.js"]"></script>
+    <script>
+        // <Routes /> renders statically, so <FocusOnNavigate> never gets to run: link
+        // clicks go through enhanced navigation, which patches the DOM and leaves focus
+        // on <body>. Move it to the new page's heading so keyboard and screen-reader
+        // users are told the page changed. Navigation only — never the first load, which
+        // would push the nav bar out of the top of the tab order.
+        //
+        // Focusing once is not enough: the interactive render of the new page arrives
+        // just after the patch and rebuilds its own markup, and removing a focused
+        // element drops focus back to <body> without firing an event. So re-claim on DOM
+        // changes for a moment after the navigation, and only ever from <body> — if the
+        // user has already tabbed or clicked somewhere, their focus stands.
+        (function attachFocusOnNavigate() {
+            if (!window.Blazor || !window.Blazor.addEventListener) {
+                setTimeout(attachFocusOnNavigate, 50);   // blazor.web.js publishes this API asynchronously
+                return;
+            }
+            Blazor.addEventListener('enhancedload', () => {
+                const claim = () => {
+                    const heading = document.querySelector('h1[tabindex="-1"]');
+                    if (heading && document.activeElement === document.body) {
+                        heading.focus({ preventScroll: true });
+                    }
+                };
+                claim();
+                const observer = new MutationObserver(claim);
+                observer.observe(document.body, { childList: true, subtree: true });
+                setTimeout(() => observer.disconnect(), 1500);
+            });
+        })();
+    </script>
 </body>
 
 </html>

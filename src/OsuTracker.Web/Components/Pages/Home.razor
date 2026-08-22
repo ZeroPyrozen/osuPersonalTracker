@@ -7,6 +7,11 @@
 
 <PageTitle>osu!PersonalTracker</PageTitle>
 
+<div class="mode-head">
+    <h1 class="mode-title" tabindex="-1">Dashboard</h1>
+    <span class="mode-sub">every ranked and approved difficulty, across all four modes</span>
+</div>
+
 @if (_rows is null)
 {
     <p class="loading">Loading progress…</p>
@@ -78,7 +83,7 @@ else
         var colour = ModeColour(r.Mode);
         <div class="panel">
             <div class="panel-title">
-                <span>@ModeName(r.Mode)</span>
+                <h2>@ModeName(r.Mode)</h2>
                 <b>@Pct(r.PlayedPercent)&#37; touched · @N(r.Untouched) never loaded</b>
             </div>
             <div class="bar">

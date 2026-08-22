@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- The progress ring the app draws on every mode card, cut down to read at 16px:
+       one stroke width, one arc, no text. The arc sits at ~72% because a mark that
+       tracked real completion would be a bare sliver and unrecognisable as a ring. -->
+  <rect width="64" height="64" rx="14" fill="#131019"/>
+  <circle cx="32" cy="32" r="19" fill="none" stroke="#2A2436" stroke-width="9"/>
+  <circle cx="32" cy="32" r="19" fill="none" stroke="#F0559C" stroke-width="9"
+          stroke-linecap="round" stroke-dasharray="119.4"
+          stroke-dashoffset="33.4" transform="rotate(-90 32 32)"/>
+</svg>

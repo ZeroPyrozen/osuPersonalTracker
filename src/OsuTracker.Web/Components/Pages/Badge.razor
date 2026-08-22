@@ -11,12 +11,12 @@
 <PageTitle>Badge · osu!PersonalTracker</PageTitle>
 
 <div class="mode-head">
-    <span class="mode-title">Badge</span>
+    <h1 class="mode-title" tabindex="-1">Badge</h1>
     <span class="mode-sub">a shareable image of your completion, served straight from this tracker</span>
 </div>
 
 <div class="panel">
-    <div class="panel-title"><span>Preview</span><b>@_width × @_height px</b></div>
+    <div class="panel-title"><h2>Preview</h2><b>@_width × @_height px</b></div>
     <div class="badge-stage @(_theme == BadgeTheme.Light ? "on-light" : "")">
         <img class="badge-preview" src="@PreviewUrl" width="@_width" height="@_height"
              alt="osu!PersonalTracker completion badge preview" />
@@ -33,7 +33,7 @@
 
 <div class="split">
     <div class="panel">
-        <div class="panel-title"><span>Scope</span><b>what the badge counts</b></div>
+        <div class="panel-title"><h2>Scope</h2><b>what the badge counts</b></div>
         <div class="filters">
             <button class="f @(_mode is null ? "on" : "")" @onclick="() => SetMode(null)">all modes</button>
             @foreach (var m in Enum.GetValues<GameMode>())
@@ -55,7 +55,7 @@
     </div>
 
     <div class="panel">
-        <div class="panel-title"><span>Look</span><b>layout, theme, accent</b></div>
+        <div class="panel-title"><h2>Look</h2><b>layout, theme, accent</b></div>
         <div class="filters">
             <button class="f @(_layout == BadgeLayout.Banner ? "on" : "")" @onclick="() => SetLayout(BadgeLayout.Banner)">banner</button>
             <button class="f @(_layout == BadgeLayout.Slim ? "on" : "")" @onclick="() => SetLayout(BadgeLayout.Slim)">slim</button>
@@ -75,7 +75,7 @@
 </div>
 
 <div class="panel">
-    <div class="panel-title"><span>Embed</span><b>paste one of these</b></div>
+    <div class="panel-title"><h2>Embed</h2><b>paste one of these</b></div>
 
     <div class="badge-url">
         <label>Public base URL</label>

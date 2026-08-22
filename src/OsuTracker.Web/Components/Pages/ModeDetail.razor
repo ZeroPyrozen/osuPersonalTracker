@@ -9,7 +9,7 @@
 <PageTitle>@ModeName(_mode) · osu!PersonalTracker</PageTitle>
 
 <div class="mode-head">
-    <span class="mode-title" style="color:@Colour(_mode)">@ModeName(_mode)</span>
+    <h1 class="mode-title" tabindex="-1" style="color:@Colour(_mode)">@ModeName(_mode)</h1>
     @if (_row is not null)
     {
         <span class="mode-sub">
@@ -35,7 +35,7 @@ else
 {
     <div class="panel">
         <div class="panel-title">
-            <span>Completion</span>
+            <h2>Completion</h2>
             <b>@Pct(_row.PassedPercent)&#37; passed</b>
         </div>
         <div class="bar">
@@ -55,7 +55,7 @@ else
 
     <div class="panel">
         <div class="panel-title">
-            <span>By star rating</span>
+            <h2>By star rating</h2>
             @if (_wall is not null)
             {
                 <b>your wall is @_wall</b>
@@ -84,7 +84,7 @@ else
 
     <div class="split">
         <div class="panel">
-            <div class="panel-title"><span>Pace</span><b>last 30 days</b></div>
+            <div class="panel-title"><h2>Pace</h2><b>last 30 days</b></div>
             @if (_recentPasses == 0)
             {
                 <div class="pace-none">
@@ -108,7 +108,7 @@ else
         </div>
 
         <div class="panel">
-            <div class="panel-title"><span>Nearly done</span><b>sets with one or two left</b></div>
+            <div class="panel-title"><h2>Nearly done</h2><b>sets with one or two left</b></div>
             @if (_nearly is null || _nearly.Count == 0)
             {
                 <div class="pace-none">No partially-completed sets.</div>
