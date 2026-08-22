@@ -24,7 +24,7 @@
         <a class="f @(m == _mode ? "on" : "")" style="--mc:@Colour(m)" href="/modes/@Slug(m)">@ModeName(m)</a>
     }
     <span class="f-gap"></span>
-    <a class="f" href="/browse">browse @ModeName(_mode) →</a>
+    <a class="f" href="/browse?mode=@Slug(_mode)">browse @ModeName(_mode) →</a>
 </div>
 
 @if (_row is null || _bands is null)

@@ -3,6 +3,7 @@
 @using OsuTracker.Web.Services
 @using System.Globalization
 @inject BrowseQueryService Query
+@inject NavigationManager Nav
 @rendermode InteractiveServer
 
 <PageTitle>Browse · osu!PersonalTracker</PageTitle>
@@ -33,11 +34,11 @@
     <span class="f-gap"></span>
 
     <select class="f" aria-label="Sort order" @onchange="SetSort">
-        <option value="StarsAsc" selected="@(_filter.Sort == BrowseSort.StarsAsc)">easiest first</option>
-        <option value="StarsDesc" selected="@(_filter.Sort == BrowseSort.StarsDesc)">hardest first</option>
-        <option value="PlaysDesc" selected="@(_filter.Sort == BrowseSort.PlaysDesc)">most played</option>
-        <option value="RankedDesc" selected="@(_filter.Sort == BrowseSort.RankedDesc)">newest ranked</option>
-        <option value="RankedAsc" selected="@(_filter.Sort == BrowseSort.RankedAsc)">oldest ranked</option>
+        <option value="easiest" selected="@(_filter.Sort == BrowseSort.StarsAsc)">easiest first</option>
+        <option value="hardest" selected="@(_filter.Sort == BrowseSort.StarsDesc)">hardest first</option>
+        <option value="played" selected="@(_filter.Sort == BrowseSort.PlaysDesc)">most played</option>
+        <option value="newest" selected="@(_filter.Sort == BrowseSort.RankedDesc)">newest ranked</option>
+        <option value="oldest" selected="@(_filter.Sort == BrowseSort.RankedAsc)">oldest ranked</option>
     </select>
 
     <input class="f f-search" type="search" aria-label="Search beatmaps"
@@ -132,40 +133,128 @@ else
 }
 
 @code {
+    // The filter lives in the URL, not in the component. Every control below navigates,
+    // and the page reads its state back out of the query string — so a view can be
+    // shared, bookmarked and reloaded, and the back button undoes one filter at a time.
+    [SupplyParameterFromQuery(Name = "mode")]   public string? ModeQuery { get; set; }
+    [SupplyParameterFromQuery(Name = "status")] public string? StatusQuery { get; set; }
+    [SupplyParameterFromQuery(Name = "sort")]   public string? SortQuery { get; set; }
+    [SupplyParameterFromQuery(Name = "q")]      public string? SearchQuery { get; set; }
+    [SupplyParameterFromQuery(Name = "page")]   public int? PageQuery { get; set; }
+
     private BrowseFilter _filter = new();
     private BrowseResult? _result;
     private Dictionary<BrowseStatus, int>? _counts;
 
     private const string Dash = "—";
 
-    protected override async Task OnInitializedAsync() => await ReloadAsync();
+    // Defaults stay out of the URL, so the everyday view is "/browse" rather than four
+    // parameters that say nothing.
+    private static readonly BrowseFilter Defaults = new();
 
-    private async Task ReloadAsync()
+    protected override async Task OnParametersSetAsync()
     {
-        _counts = await Query.GetStatusCountsAsync(_filter.Mode);
-        _result = await Query.QueryAsync(_filter);
-    }
-
-    // Any filter change resets to page 0 — staying on page 40 of a result set that
-    // just shrank to 3 pages shows an empty table and reads as a bug.
-    private async Task SetMode(GameMode m) { _filter = _filter with { Mode = m, Page = 0 }; await ReloadAsync(); }
-    private async Task SetStatus(BrowseStatus s) { _filter = _filter with { Status = s, Page = 0 }; await ReloadAsync(); }
-    private async Task GoTo(int page) { _filter = _filter with { Page = page }; _result = await Query.QueryAsync(_filter); }
-
-    private async Task SetSort(ChangeEventArgs e)
-    {
-        if (Enum.TryParse<BrowseSort>(e.Value?.ToString(), out var s))
+        var next = new BrowseFilter
         {
-            _filter = _filter with { Sort = s, Page = 0 };
-            _result = await Query.QueryAsync(_filter);
-        }
+            Mode = ParseMode(ModeQuery),
+            Status = ParseStatus(StatusQuery),
+            Sort = ParseSort(SortQuery),
+            Search = string.IsNullOrWhiteSpace(SearchQuery) ? null : SearchQuery.Trim(),
+            // 1-based in the URL, because that is the number the pager shows.
+            Page = Math.Max(0, (PageQuery ?? 1) - 1)
+        };
+
+        // BrowseFilter is a record, so an unrelated re-render costs no queries.
+        if (_result is not null && next == _filter) return;
+
+        var modeChanged = _counts is null || next.Mode != _filter.Mode;
+        _filter = next;
+
+        if (modeChanged) _counts = await Query.GetStatusCountsAsync(_filter.Mode);
+        _result = await Query.QueryAsync(_filter);
+
+        // A hand-edited or stale page number lands past the end. Send it to the last real
+        // page rather than showing an empty table that reads as a broken filter.
+        if (_result.Rows.Count == 0 && _result.Total > 0 && _filter.Page > 0)
+            Nav.NavigateTo(UrlFor(_filter with { Page = _result.PageCount - 1 }), replace: true);
     }
 
-    private async Task SetSearch(ChangeEventArgs e)
+    private void SetMode(GameMode m) => Apply(_filter with { Mode = m, Page = 0 });
+    private void SetStatus(BrowseStatus st) => Apply(_filter with { Status = st, Page = 0 });
+    private void GoTo(int page) => Apply(_filter with { Page = page });
+
+    private void SetSort(ChangeEventArgs e) =>
+        Apply(_filter with { Sort = ParseSort(e.Value?.ToString()), Page = 0 });
+
+    private void SetSearch(ChangeEventArgs e) =>
+        Apply(_filter with { Search = e.Value?.ToString(), Page = 0 });
+
+    /// <summary>Each change is its own history entry, so back means "undo that filter".</summary>
+    private void Apply(BrowseFilter f) => Nav.NavigateTo(UrlFor(f));
+
+    private string UrlFor(BrowseFilter f) =>
+        Nav.GetUriWithQueryParameters(Nav.ToAbsoluteUri("browse").ToString(), new Dictionary<string, object?>
+        {
+            ["mode"] = f.Mode == Defaults.Mode ? null : ModeSlug(f.Mode),
+            ["status"] = f.Status == Defaults.Status ? null : StatusSlug(f.Status),
+            ["sort"] = f.Sort == Defaults.Sort ? null : SortSlug(f.Sort),
+            ["q"] = string.IsNullOrWhiteSpace(f.Search) ? null : f.Search.Trim(),
+            ["page"] = f.Page == 0 ? null : f.Page + 1
+        });
+
+    // Parsing is total: a URL typed by hand falls back to the default rather than
+    // erroring, because none of these values can break the query.
+    private static GameMode ParseMode(string? s) => s?.ToLowerInvariant() switch
     {
-        _filter = _filter with { Search = e.Value?.ToString(), Page = 0 };
-        _result = await Query.QueryAsync(_filter);
-    }
+        "osu" or "standard" => GameMode.Osu,
+        "taiko" => GameMode.Taiko,
+        "mania" => GameMode.Mania,
+        "fruits" or "catch" => GameMode.Fruits,
+        _ => Defaults.Mode
+    };
+
+    private static BrowseStatus ParseStatus(string? s) => s?.ToLowerInvariant() switch
+    {
+        "all" => BrowseStatus.All,
+        "attempted" => BrowseStatus.Attempted,
+        "passed" => BrowseStatus.Passed,
+        "prerank" or "pre-rank" => BrowseStatus.PreRankOnly,
+        "untouched" => BrowseStatus.Untouched,
+        _ => Defaults.Status
+    };
+
+    private static BrowseSort ParseSort(string? s) => s?.ToLowerInvariant() switch
+    {
+        "hardest" => BrowseSort.StarsDesc,
+        "played" => BrowseSort.PlaysDesc,
+        "newest" => BrowseSort.RankedDesc,
+        "oldest" => BrowseSort.RankedAsc,
+        _ => Defaults.Sort
+    };
+
+    private static string ModeSlug(GameMode m) => m switch
+    {
+        GameMode.Osu => "osu", GameMode.Taiko => "taiko",
+        GameMode.Fruits => "fruits", GameMode.Mania => "mania", _ => "fruits"
+    };
+
+    private static string StatusSlug(BrowseStatus s) => s switch
+    {
+        BrowseStatus.All => "all",
+        BrowseStatus.Attempted => "attempted",
+        BrowseStatus.Passed => "passed",
+        BrowseStatus.PreRankOnly => "prerank",
+        _ => "untouched"
+    };
+
+    private static string SortSlug(BrowseSort s) => s switch
+    {
+        BrowseSort.StarsDesc => "hardest",
+        BrowseSort.PlaysDesc => "played",
+        BrowseSort.RankedDesc => "newest",
+        BrowseSort.RankedAsc => "oldest",
+        _ => "easiest"
+    };
 
     private static string N(int v) => v.ToString("N0", CultureInfo.InvariantCulture);
 
@@ -191,12 +280,6 @@ else
     {
         GameMode.Osu => "osu!", GameMode.Taiko => "taiko",
         GameMode.Fruits => "catch", GameMode.Mania => "mania", _ => m.ToString()
-    };
-
-    private static string ModeSlug(GameMode m) => m switch
-    {
-        GameMode.Osu => "osu", GameMode.Taiko => "taiko",
-        GameMode.Fruits => "fruits", GameMode.Mania => "mania", _ => "osu"
     };
 
     private static string Colour(GameMode m) => m switch

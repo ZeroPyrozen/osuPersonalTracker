@@ -1,11 +1,12 @@
 @inherits LayoutComponentBase
+@inject NavigationManager Nav
 
 <div class="shell">
     <header class="appnav">
         <div class="brand">osu<span>!</span>PersonalTracker</div>
         <nav>
             <NavLink href="" Match="NavLinkMatch.All" ActiveClass="active">Dashboard</NavLink>
-            <NavLink href="modes/fruits" ActiveClass="active">Modes</NavLink>
+            <a href="modes/@_lastMode" class="@(OnModes ? "active" : "")">Modes</a>
             <NavLink href="browse" ActiveClass="active">Browse</NavLink>
             <NavLink href="badge" ActiveClass="active">Badge</NavLink>
             <NavLink href="sync" ActiveClass="active">Sync</NavLink>
@@ -25,6 +26,23 @@
 </div>
 
 @code {
+    // Which mode "Modes" opens: the one you are reading while you are in the section,
+    // catch everywhere else. The layout is rebuilt on each navigation, so this does not
+    // remember the mode once you leave — that would need a cookie, not a field.
+    private string _lastMode = "fruits";
+
+    private bool OnModes =>
+        Nav.ToBaseRelativePath(Nav.Uri).StartsWith("modes", StringComparison.OrdinalIgnoreCase);
+
+    protected override void OnParametersSet()
+    {
+        var path = Nav.ToBaseRelativePath(Nav.Uri);
+        if (!OnModes) return;
+
+        var slug = path.Split('/', '?').Skip(1).FirstOrDefault();
+        if (!string.IsNullOrEmpty(slug)) _lastMode = slug.ToLowerInvariant();
+    }
+
     [CascadingParameter] public string? SyncStatus { get; set; }
     private bool SyncFresh => true;
     private string SyncLabel => SyncStatus ?? "local";
