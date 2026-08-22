@@ -89,12 +89,12 @@ else
             <div class="bar">
                 <i style="width:@W(r.Passed, r.Total); background:@colour"></i>
                 <i style="width:@W(r.Attempted, r.Total); background:var(--warn)"></i>
-                <i style="width:@W(r.Untouched, r.Total); background:var(--panel-2)"></i>
+                <i style="width:@W(r.Untouched, r.Total); background:var(--untouched)"></i>
             </div>
             <div class="seg-legend">
                 <span><i style="background:@colour"></i>Passed @N(r.Passed)</span>
                 <span><i style="background:var(--warn)"></i>Attempted @N(r.Attempted) <span title="Playcounts carry no timestamps, so pre-rank plays cannot be filtered out of this number.">≈</span></span>
-                <span><i style="background:var(--panel-2)"></i>Untouched @N(r.Untouched)</span>
+                <span><i class="untouched"></i>Untouched @N(r.Untouched)</span>
             </div>
         </div>
     }

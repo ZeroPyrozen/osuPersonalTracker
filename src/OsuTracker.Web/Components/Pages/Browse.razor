@@ -32,7 +32,7 @@
 
     <span class="f-gap"></span>
 
-    <select class="f" @onchange="SetSort">
+    <select class="f" aria-label="Sort order" @onchange="SetSort">
         <option value="StarsAsc" selected="@(_filter.Sort == BrowseSort.StarsAsc)">easiest first</option>
         <option value="StarsDesc" selected="@(_filter.Sort == BrowseSort.StarsDesc)">hardest first</option>
         <option value="PlaysDesc" selected="@(_filter.Sort == BrowseSort.PlaysDesc)">most played</option>
@@ -40,7 +40,8 @@
         <option value="RankedAsc" selected="@(_filter.Sort == BrowseSort.RankedAsc)">oldest ranked</option>
     </select>
 
-    <input class="f f-search" type="search" placeholder="search title, artist, mapper, difficulty…"
+    <input class="f f-search" type="search" aria-label="Search beatmaps"
+           placeholder="search title, artist, mapper, difficulty…"
            value="@_filter.Search" @onchange="SetSearch" />
 </div>
 
@@ -62,7 +63,8 @@ else
         <table class="dt">
             <thead>
                 <tr>
-                    <th>Beatmap</th><th>Difficulty</th><th class="r">★</th>
+                    <th>Beatmap</th><th>Difficulty</th>
+                    <th class="r"><span aria-hidden="true">★</span><span class="sr-only">Star rating</span></th>
                     <th>Status</th><th class="r">Grade</th><th class="r">Acc</th>
                     <th>Mods</th><th class="r">Plays</th><th class="r">Ranked</th>
                 </tr>

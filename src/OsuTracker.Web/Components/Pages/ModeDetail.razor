@@ -41,7 +41,7 @@ else
         <div class="bar">
             <i style="width:@W(_row.Passed, _row.Total); background:@Colour(_mode)"></i>
             <i style="width:@W(_row.Attempted, _row.Total); background:var(--warn)"></i>
-            <i style="width:@W(_row.Untouched, _row.Total); background:var(--panel-2)"></i>
+            <i style="width:@W(_row.Untouched, _row.Total); background:var(--untouched)"></i>
         </div>
         <div class="seg-legend">
             <span><i style="background:@Colour(_mode)"></i>Passed @N(_row.Passed)</span>
@@ -49,7 +49,7 @@ else
                 <i style="background:var(--warn)"></i>Attempted @N(_row.Attempted)
                 <span class="approx" title="Playcounts carry no timestamps, so plays from before a map was ranked cannot be filtered out of this number.">≈</span>
             </span>
-            <span><i style="background:var(--panel-2)"></i>Untouched @N(_row.Untouched)</span>
+            <span><i class="untouched"></i>Untouched @N(_row.Untouched)</span>
         </div>
     </div>
 
@@ -71,7 +71,7 @@ else
                     <div class="histo-stack" style="height:@(Math.Max(h, 3))px;">
                         <i style="height:@Seg(b.Passed, b.Total); background:@Colour(_mode)"></i>
                         <i style="height:@Seg(b.Attempted, b.Total); background:var(--warn)"></i>
-                        <i style="height:@Seg(b.Untouched, b.Total); background:var(--panel-2)"></i>
+                        <i style="height:@Seg(b.Untouched, b.Total); background:var(--untouched)"></i>
                     </div>
                     <div class="histo-x">@b.Label</div>
                 </div>

@@ -64,10 +64,12 @@
             <button class="f @(_theme == BadgeTheme.Light ? "on" : "")" @onclick="() => Set(() => _theme = BadgeTheme.Light)">light</button>
         </div>
         <div class="filters">
-            <button class="sw @(_accent is null ? "on" : "")" title="match the mode" @onclick="() => Set(() => _accent = null)">auto</button>
+            <button class="sw @(_accent is null ? "on" : "")" aria-label="Accent colour: match the mode"
+                    title="match the mode" @onclick="() => Set(() => _accent = null)">auto</button>
             @foreach (var (name, hex) in Swatches)
             {
-                <button class="sw @(_accent == name ? "on" : "")" style="background:@hex" title="@name"
+                <button class="sw @(_accent == name ? "on" : "")" style="background:@hex"
+                        aria-label="Accent colour: @name" title="@name"
                         @onclick="() => Set(() => _accent = name)"></button>
             }
         </div>
@@ -78,8 +80,8 @@
     <div class="panel-title"><h2>Embed</h2><b>paste one of these</b></div>
 
     <div class="badge-url">
-        <label>Public base URL</label>
-        <input class="f f-search" value="@_baseUrl" @onchange="OnBaseChanged"
+        <label for="badge-base-url">Public base URL</label>
+        <input id="badge-base-url" class="f f-search" value="@_baseUrl" @onchange="OnBaseChanged"
                placeholder="https://tracker.example.com" />
     </div>
 
