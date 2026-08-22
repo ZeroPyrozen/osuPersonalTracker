@@ -7,6 +7,7 @@
 @inject NavigationManager Nav
 @inject IJSRuntime JS
 @rendermode InteractiveServer
+@implements IDisposable
 
 <PageTitle>Badge · osu!PersonalTracker</PageTitle>
 
@@ -22,9 +23,9 @@
              alt="osu!PersonalTracker completion badge preview" />
     </div>
     <div class="badge-actions">
-        <a class="f on" style="--mc: @Accent" href="@DownloadUrl(2)" target="_blank" rel="noopener">download png @@2x</a>
-        <a class="f" href="@DownloadUrl(1)" target="_blank" rel="noopener">png @@1x</a>
-        <a class="f" href="@DownloadUrl(4)" target="_blank" rel="noopener">png @@4x</a>
+        <a class="f on" style="--mc: @Accent" href="@DownloadUrl(2)">download png @@2x</a>
+        <a class="f" href="@DownloadUrl(1)">png @@1x</a>
+        <a class="f" href="@DownloadUrl(4)">png @@4x</a>
         <a class="f" href="@AbsoluteUrl(false)" target="_blank" rel="noopener">open svg</a>
         <span class="f-gap"></span>
         <button class="f" @onclick="RefreshAsync">refresh data</button>
@@ -134,6 +135,7 @@
     private BadgeSnapshot? _snap;
     private string _baseUrl = "";
     private string? _copied;
+    private CancellationTokenSource? _copyReset;
 
     // Bumped on every change so the browser refetches rather than showing the image it
     // already has for a URL whose numbers have since moved.
@@ -191,7 +193,39 @@
         {
             await js.InvokeVoidAsync("copy", value);
         }
+
         _copied = Snippets().FirstOrDefault(s => s.Value == value).Label;
+        ResetCopiedShortly();
+    }
+
+    /// <summary>
+    /// The confirmation is about the click that just happened, so it has to expire —
+    /// otherwise a stale "copied" sits on a button the user moved on from minutes ago.
+    /// </summary>
+    private void ResetCopiedShortly()
+    {
+        _copyReset?.Cancel();
+        _copyReset?.Dispose();
+        _copyReset = new CancellationTokenSource();
+        var token = _copyReset.Token;
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(2), token);
+                await InvokeAsync(() => { _copied = null; StateHasChanged(); });
+            }
+            catch (OperationCanceledException) { }
+            // The circuit can go away while the delay is running; nothing to do then.
+            catch (ObjectDisposedException) { }
+        }, token);
+    }
+
+    public void Dispose()
+    {
+        _copyReset?.Cancel();
+        _copyReset?.Dispose();
     }
 
     private void OnBaseChanged(ChangeEventArgs e)

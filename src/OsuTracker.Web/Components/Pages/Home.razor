@@ -93,11 +93,13 @@ else
             </div>
             <div class="seg-legend">
                 <span><i style="background:@colour"></i>Passed @N(r.Passed)</span>
-                <span><i style="background:var(--warn)"></i>Attempted @N(r.Attempted) <span title="Playcounts carry no timestamps, so pre-rank plays cannot be filtered out of this number.">≈</span></span>
+                <span><i style="background:var(--warn)"></i>Attempted @N(r.Attempted) <span class="qual">(approximate)</span></span>
                 <span><i class="untouched"></i>Untouched @N(r.Untouched)</span>
             </div>
         </div>
     }
+
+    <p class="footnote"><b>Attempted is approximate.</b> Playcounts carry no timestamps, so plays from before a map was ranked cannot be told apart from plays since, and they are counted here either way.</p>
 }
 
 @code {

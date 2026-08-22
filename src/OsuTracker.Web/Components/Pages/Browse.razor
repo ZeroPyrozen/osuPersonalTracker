@@ -5,6 +5,7 @@
 @inject BrowseQueryService Query
 @inject NavigationManager Nav
 @rendermode InteractiveServer
+@implements IDisposable
 
 <PageTitle>Browse · osu!PersonalTracker</PageTitle>
 
@@ -43,7 +44,7 @@
 
     <input class="f f-search" type="search" aria-label="Search beatmaps"
            placeholder="search title, artist, mapper, difficulty…"
-           value="@_filter.Search" @onchange="SetSearch" />
+           value="@_filter.Search" @oninput="OnSearchInput" />
 </div>
 
 @if (_result is null)
@@ -116,7 +117,15 @@ else
                 }
                 @if (_result.Rows.Count == 0)
                 {
-                    <tr><td colspan="9" class="empty">Nothing matches those filters.</td></tr>
+                    <tr>
+                        <td colspan="9" class="empty">
+                            Nothing matches those filters.
+                            @if (HasFilters)
+                            {
+                                <a class="f" style="margin-left: 12px" href="@UrlFor(Defaults with { Mode = _filter.Mode })">clear filters</a>
+                            }
+                        </td>
+                    </tr>
                 }
             </tbody>
         </table>
@@ -145,6 +154,7 @@ else
     private BrowseFilter _filter = new();
     private BrowseResult? _result;
     private Dictionary<BrowseStatus, int>? _counts;
+    private CancellationTokenSource? _searchDebounce;
 
     private const string Dash = "—";
 
@@ -186,11 +196,44 @@ else
     private void SetSort(ChangeEventArgs e) =>
         Apply(_filter with { Sort = ParseSort(e.Value?.ToString()), Page = 0 });
 
-    private void SetSearch(ChangeEventArgs e) =>
-        Apply(_filter with { Search = e.Value?.ToString(), Page = 0 });
+    /// <summary>
+    /// Search runs as you type. The field used to commit on blur or Enter, with nothing on
+    /// screen saying so, which reads as a search box that does not work.
+    /// </summary>
+    private void OnSearchInput(ChangeEventArgs e)
+    {
+        var text = e.Value?.ToString();
+
+        _searchDebounce?.Cancel();
+        _searchDebounce?.Dispose();
+        _searchDebounce = new CancellationTokenSource();
+        var token = _searchDebounce.Token;
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(400), token);
+                // Replace rather than push: eight keystrokes should not cost eight
+                // presses of the back button to undo.
+                await InvokeAsync(() => Apply(_filter with { Search = text, Page = 0 }, replace: true));
+            }
+            catch (OperationCanceledException) { }
+            catch (ObjectDisposedException) { }
+        }, token);
+    }
+
+    /// <summary>Anything the user chose, as opposed to how the page opens.</summary>
+    private bool HasFilters => _filter != Defaults with { Mode = _filter.Mode };
 
     /// <summary>Each change is its own history entry, so back means "undo that filter".</summary>
-    private void Apply(BrowseFilter f) => Nav.NavigateTo(UrlFor(f));
+    private void Apply(BrowseFilter f, bool replace = false) => Nav.NavigateTo(UrlFor(f), replace: replace);
+
+    public void Dispose()
+    {
+        _searchDebounce?.Cancel();
+        _searchDebounce?.Dispose();
+    }
 
     private string UrlFor(BrowseFilter f) =>
         Nav.GetUriWithQueryParameters(Nav.ToAbsoluteUri("browse").ToString(), new Dictionary<string, object?>

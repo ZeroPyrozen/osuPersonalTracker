@@ -47,10 +47,11 @@ else
             <span><i style="background:@Colour(_mode)"></i>Passed @N(_row.Passed)</span>
             <span>
                 <i style="background:var(--warn)"></i>Attempted @N(_row.Attempted)
-                <span class="approx" title="Playcounts carry no timestamps, so plays from before a map was ranked cannot be filtered out of this number.">≈</span>
+                <span class="qual">(approximate)</span>
             </span>
             <span><i class="untouched"></i>Untouched @N(_row.Untouched)</span>
         </div>
+        <p class="footnote"><b>Attempted is approximate.</b> Playcounts carry no timestamps, so plays from before a map was ranked cannot be told apart from plays since, and they are counted here either way.</p>
     </div>
 
     <div class="panel">
@@ -142,7 +143,15 @@ else
 
     protected override async Task OnParametersSetAsync()
     {
-        _mode = Parse(Mode);
+        // A slug that names no ruleset is a 404, not catch: rendering real numbers under
+        // someone else's URL is worse than saying the page does not exist.
+        if (Parse(Mode) is not { } mode)
+        {
+            Nav.NotFound();
+            return;
+        }
+
+        _mode = mode;
 
         var all = await Progress.GetAllModesAsync();
         _row = all.First(r => r.Mode == _mode);
@@ -186,12 +195,13 @@ else
     private static string Seg(int part, int total) =>
         (total == 0 ? 0 : part * 100.0 / total).ToString("F2", CultureInfo.InvariantCulture) + "%";
 
-    private static GameMode Parse(string s) => s.ToLowerInvariant() switch
+    private static GameMode? Parse(string s) => s.ToLowerInvariant() switch
     {
         "osu" or "standard" => GameMode.Osu,
         "taiko" => GameMode.Taiko,
         "mania" => GameMode.Mania,
-        _ => GameMode.Fruits
+        "fruits" or "catch" => GameMode.Fruits,
+        _ => null
     };
 
     private static string Slug(GameMode m) => m switch
