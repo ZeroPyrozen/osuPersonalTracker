@@ -1,5 +1,10 @@
 @inherits LayoutComponentBase
 @inject NavigationManager Nav
+@inject IDbContextFactory<TrackerDbContext> DbFactory
+@using Microsoft.EntityFrameworkCore
+@using OsuTracker.Web.Data
+@using OsuTracker.Web.Data.Entities
+@using System.Globalization
 
 <div class="shell">
     <header class="appnav">
@@ -12,10 +17,10 @@
             <NavLink href="sync" ActiveClass="active">Sync</NavLink>
         </nav>
         <div class="spacer"></div>
-        <div class="syncbadge">
-            <i class="pulse @(SyncFresh ? "" : "stale")"></i>
+        <a class="syncbadge" href="sync" title="@SyncTitle">
+            <i class="pulse @SyncClass"></i>
             @SyncLabel
-        </div>
+        </a>
     </header>
 
     @Body
@@ -43,7 +48,61 @@
         if (!string.IsNullOrEmpty(slug)) _lastMode = slug.ToLowerInvariant();
     }
 
-    [CascadingParameter] public string? SyncStatus { get; set; }
-    private bool SyncFresh => true;
-    private string SyncLabel => SyncStatus ?? "local";
+    // The badge used to be hard-coded green with the word "local", which is a claim, not
+    // a status. It now reports the newest job — one small query per page render.
+    private SyncJobState? _state;
+    private DateTimeOffset? _lastSuccess;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            await using var db = await DbFactory.CreateDbContextAsync();
+            var jobs = await db.SyncJobs.ToListAsync();
+
+            if (jobs.Count == 0) return;
+
+            _state = jobs.Any(j => j.State == SyncJobState.Running) ? SyncJobState.Running
+                : jobs.Any(j => j.State == SyncJobState.Failed) ? SyncJobState.Failed
+                : SyncJobState.Completed;
+
+            _lastSuccess = jobs.Where(j => j.LastSuccessAt is not null)
+                               .Max(j => j.LastSuccessAt);
+        }
+        catch (Exception)
+        {
+            // The chrome must not take the page down if the database is mid-migration.
+            _state = null;
+        }
+    }
+
+    private TimeSpan? SinceSuccess =>
+        _lastSuccess is null ? null : DateTimeOffset.UtcNow - _lastSuccess.Value;
+
+    private string SyncClass => _state switch
+    {
+        SyncJobState.Running => "",
+        SyncJobState.Failed => "failed",
+        _ when SinceSuccess is null => "unknown",
+        _ when SinceSuccess.Value.TotalHours > 48 => "stale",
+        _ => ""
+    };
+
+    private string SyncLabel => _state switch
+    {
+        SyncJobState.Running => "syncing",
+        SyncJobState.Failed => "sync failed",
+        _ when SinceSuccess is null => "never synced",
+        _ => $"synced {Ago(SinceSuccess.Value)}"
+    };
+
+    private string SyncTitle => _lastSuccess is null
+        ? "No sync job has completed yet"
+        : $"Last successful sync: {_lastSuccess.Value.UtcDateTime.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture)} UTC";
+
+    private static string Ago(TimeSpan d) =>
+        d.TotalMinutes < 1 ? "just now"
+        : d.TotalHours < 1 ? $"{(int)d.TotalMinutes}m ago"
+        : d.TotalDays < 1 ? $"{(int)d.TotalHours}h ago"
+        : $"{(int)d.TotalDays}d ago";
 }

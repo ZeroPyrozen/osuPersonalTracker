@@ -68,8 +68,14 @@ a { color: var(--ink); text-decoration: none; }
 .appnav nav a.active { color: var(--ink); font-weight: 600; border-bottom: 2px solid var(--osu); padding-bottom: 3px; }
 .appnav .spacer { flex: 1; }
 .syncbadge { font-family: var(--mono); font-size: 11px; color: var(--muted); display: inline-flex; align-items: center; gap: 7px; }
-.pulse { width: 6px; height: 6px; border-radius: 50%; background: var(--good); }
+.pulse { width: 6px; height: 6px; border-radius: 50%; background: var(--good); flex: none; }
 .pulse.stale { background: var(--warn); }
+.pulse.failed { background: var(--crit); }
+.pulse.unknown { background: var(--muted); }
+a.syncbadge:hover { color: var(--ink); }
+
+.live { color: var(--good); }
+.refresh { margin-left: 10px; letter-spacing: 0; text-transform: none; }
 
 /* ---------- stat strip ---------- */
 .stat-strip {
@@ -82,28 +88,26 @@ a { color: var(--ink); text-decoration: none; }
 .stat .v { font-family: var(--display); font-weight: 700; font-size: 22px; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
 .stat .v small { font-size: 12px; font-weight: 500; color: var(--muted); font-family: var(--body); }
 
-/* ---------- mode cards ---------- */
-.mode-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 14px; margin-bottom: 22px; }
-.mode-card {
-  background: var(--panel); border: 1px solid var(--line); border-radius: 9px;
-  padding: 16px; position: relative; overflow: hidden;
-  transition: border-color 0.15s, transform 0.15s;
-}
-.mode-card:hover { border-color: var(--mc); transform: translateY(-1px); }
-.mode-card::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 3px; background: var(--mc); }
-.mc-head { display: flex; align-items: center; gap: 8px; margin-bottom: 13px; }
-.dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
-.mc-name { font-family: var(--display); font-weight: 700; font-size: 15px; letter-spacing: -0.015em; }
-.mc-body { display: flex; align-items: center; gap: 15px; }
+/* ---------- dashboard: one panel per mode ---------- */
+/* The ring, the bar and the legend used to live in two stacked sections sorted by
+   different keys, so every mode appeared twice and the two orders could disagree. */
+/* Two up on a wide screen: four modes should be one glance, not a scroll. */
+.mode-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(430px, 1fr)); gap: 14px; margin-bottom: 22px; }
+
+.mode-panel { position: relative; overflow: hidden; }
+.mode-panel::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 3px; background: var(--mc); }
+.mode-panel .panel-title h2 a { color: var(--ink); }
+.mode-panel .panel-title h2 a:hover { color: var(--mc); }
+
+.mp-body { display: flex; align-items: center; gap: 18px; }
+.mp-bars { flex: 1; min-width: 0; }
+.mp-bars .seg-legend { margin-top: 11px; }
+
 .ring { flex: none; }
 .ring circle { fill: none; stroke-linecap: round; }
 .ring .track { stroke: var(--untouched); }
 .ring .fill { stroke: var(--mc); transform: rotate(-90deg); transform-origin: 50% 50%; transition: stroke-dashoffset 0.6s ease; }
 .ring text { font-family: var(--display); font-weight: 700; font-size: 15px; fill: var(--ink); font-variant-numeric: tabular-nums; }
-.mc-frac { font-family: var(--mono); font-size: 13px; font-variant-numeric: tabular-nums; margin-bottom: 4px; }
-.mc-frac b { color: var(--mc); font-weight: 700; }
-.mc-frac span { color: var(--muted); }
-.mc-sub { font-size: 11px; color: var(--muted); font-family: var(--mono); }
 
 /* ---------- ladder ---------- */
 .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 9px; padding: 17px; margin-bottom: 14px; }
@@ -217,7 +221,14 @@ select.f { cursor: pointer; }
 .mod { color: var(--muted); }
 .mod-nf { color: var(--warn); font-weight: 700; }
 
-.pager { display: flex; align-items: center; gap: 14px; margin-top: 16px; font-size: 11px; color: var(--muted); }
+.pager { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 16px; font-size: 11px; color: var(--muted); }
+.pager-jump { display: inline-flex; align-items: center; gap: 8px; font-family: var(--mono); font-size: 11px; margin: 0 6px; }
+.pager-input {
+  width: 74px; text-align: center; color: var(--ink);
+  font-family: var(--mono); font-size: 11px; font-variant-numeric: tabular-nums;
+}
+.pager-input:focus { border-color: var(--osu); }
+.result-line .range { color: var(--ink); }
 
 /* ---------- mode detail ---------- */
 .mode-head { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-bottom: 16px; }
@@ -347,4 +358,15 @@ a.f { text-decoration: none; display: inline-block; }
   .pager { gap: 18px; }
   .nearly-row { padding: 12px 0; }
   .snippet { gap: 12px; }
+}
+
+/* Every animation in this app is decorative — a bar sliding to its width, a ring
+   sweeping to its percentage. Nothing is lost by arriving there instantly. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

@@ -7,6 +7,7 @@
 @inject IDbContextFactory<TrackerDbContext> DbFactory
 @inject OsuRateLimiter Limiter
 @rendermode InteractiveServer
+@implements IDisposable
 
 <PageTitle>Sync · osu!PersonalTracker</PageTitle>
 
@@ -34,7 +35,21 @@
 </div>
 
 <div class="panel">
-    <div class="panel-title"><h2>Jobs</h2><b>@_jobs.Count recorded</b></div>
+    <div class="panel-title">
+        <h2>Jobs</h2>
+        <b>
+            @_jobs.Count recorded ·
+            @if (AnyRunning)
+            {
+                <span class="live">live, every 5s</span>
+            }
+            else
+            {
+                <span>checked @Ago(_loadedAt)</span>
+            }
+            <button class="f refresh" @onclick="RefreshAsync">refresh</button>
+        </b>
+    </div>
 
     @if (_jobs.Count == 0)
     {
@@ -79,12 +94,57 @@ dotnet run -- sync recent       # every few hours: keeps everything current</pre
 @code {
     private List<SyncJob> _jobs = [];
     private int _permits;
+    private DateTimeOffset _loadedAt = DateTimeOffset.UtcNow;
+    private CancellationTokenSource? _poll;
 
-    protected override async Task OnInitializedAsync()
+    private bool AnyRunning => _jobs.Any(j => j.State == SyncJobState.Running);
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    protected override void OnAfterRender(bool firstRender)
+    {
+        // Only once the circuit exists — a poll started during prerender would run on a
+        // component nobody is looking at.
+        if (firstRender) _ = PollAsync();
+    }
+
+    private async Task LoadAsync()
     {
         await using var db = await DbFactory.CreateDbContextAsync();
         _jobs = await db.SyncJobs.OrderBy(j => j.Name).ToListAsync();
         _permits = Limiter.AvailablePermits;
+        _loadedAt = DateTimeOffset.UtcNow;
+    }
+
+    private async Task RefreshAsync() => await LoadAsync();
+
+    /// <summary>
+    /// A progress bar that never moves teaches people not to trust the screen. Poll fast
+    /// while something is running, slowly otherwise — a job started from the CLI has to
+    /// show up here without a reload, but an idle tracker should not query every 5s.
+    /// </summary>
+    private async Task PollAsync()
+    {
+        _poll = new CancellationTokenSource();
+        var token = _poll.Token;
+
+        try
+        {
+            while (!token.IsCancellationRequested)
+            {
+                await Task.Delay(AnyRunning ? TimeSpan.FromSeconds(5) : TimeSpan.FromSeconds(30), token);
+                await LoadAsync();
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch (ObjectDisposedException) { }
+    }
+
+    public void Dispose()
+    {
+        _poll?.Cancel();
+        _poll?.Dispose();
     }
 
     private static string N(int v) => v.ToString("N0", CultureInfo.InvariantCulture);

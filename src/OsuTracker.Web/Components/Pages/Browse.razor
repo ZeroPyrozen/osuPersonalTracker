@@ -55,9 +55,13 @@ else
 {
     <div class="result-line">
         @N(_result.Total) results
+        @if (_result.Total > _result.PageSize)
+        {
+            <span class="range"> · showing @N(FirstRowNumber)&ndash;@N(LastRowNumber)</span>
+        }
         @if (_filter.Status == BrowseStatus.Untouched && _filter.Sort == BrowseSort.StarsAsc)
         {
-            <span class="hint">· easiest never-passed first — the top row is your next map</span>
+            <span class="hint"> · easiest never-passed first — the top row is your next map</span>
         }
     </div>
 
@@ -134,9 +138,20 @@ else
     @if (_result.PageCount > 1)
     {
         <div class="pager">
-            <button class="f" disabled="@(_filter.Page == 0)" @onclick="() => GoTo(_filter.Page - 1)">← prev</button>
-            <span class="mono">page @(_filter.Page + 1) of @N(_result.PageCount)</span>
-            <button class="f" disabled="@(_filter.Page >= _result.PageCount - 1)" @onclick="() => GoTo(_filter.Page + 1)">next →</button>
+            <button class="f" disabled="@(_filter.Page == 0)" @onclick="() => GoTo(0)"
+                    aria-label="First page">&laquo; first</button>
+            <button class="f" disabled="@(_filter.Page == 0)" @onclick="() => GoTo(_filter.Page - 1)">&lsaquo; prev</button>
+
+            <span class="pager-jump">
+                page
+                <input class="f pager-input" type="number" min="1" max="@_result.PageCount"
+                       value="@(_filter.Page + 1)" @onchange="JumpTo" aria-label="Page number" />
+                of @N(_result.PageCount)
+            </span>
+
+            <button class="f" disabled="@(_filter.Page >= _result.PageCount - 1)" @onclick="() => GoTo(_filter.Page + 1)">next &rsaquo;</button>
+            <button class="f" disabled="@(_filter.Page >= _result.PageCount - 1)" @onclick="() => GoTo(_result.PageCount - 1)"
+                    aria-label="Last page">last &raquo;</button>
         </div>
     }
 }
@@ -192,6 +207,25 @@ else
     private void SetMode(GameMode m) => Apply(_filter with { Mode = m, Page = 0 });
     private void SetStatus(BrowseStatus st) => Apply(_filter with { Status = st, Page = 0 });
     private void GoTo(int page) => Apply(_filter with { Page = page });
+
+    /// <summary>
+    /// Typing a page number beats pressing "next" 2,600 times, which is what browsing
+    /// 130,937 untouched osu! maps used to cost.
+    /// </summary>
+    private void JumpTo(ChangeEventArgs e)
+    {
+        if (_result is null) return;
+        if (!int.TryParse(e.Value?.ToString(), out var oneBased)) return;
+
+        var page = Math.Clamp(oneBased, 1, _result.PageCount) - 1;
+        if (page != _filter.Page) GoTo(page);
+    }
+
+    private int FirstRowNumber => _result is null ? 0 : _filter.Page * _result.PageSize + 1;
+
+    private int LastRowNumber => _result is null
+        ? 0
+        : Math.Min(_filter.Page * _result.PageSize + _result.Rows.Count, _result.Total);
 
     private void SetSort(ChangeEventArgs e) =>
         Apply(_filter with { Sort = ParseSort(e.Value?.ToString()), Page = 0 });

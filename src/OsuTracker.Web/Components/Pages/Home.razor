@@ -51,53 +51,42 @@ else
         </div>
     </div>
 
-    <div class="mode-grid">
+    <div class="mode-list">
         @foreach (var r in _rows.OrderByDescending(x => x.PassedPercent).ThenByDescending(x => x.PlayedPercent))
         {
             var colour = ModeColour(r.Mode);
-            <a class="mode-card" href="/modes/@Slug(r.Mode)" style="--mc: @colour">
-                <div class="mc-head">
-                    <i class="dot" style="background:@colour"></i>
-                    <span class="mc-name">@ModeName(r.Mode)</span>
+            <div class="panel mode-panel" style="--mc: @colour">
+                <div class="panel-title">
+                    <h2><a href="/modes/@Slug(r.Mode)">@ModeName(r.Mode)</a></h2>
+                    <b>@N(r.Total) counted &middot; @Pct(r.PlayedPercent)&#37; touched</b>
                 </div>
-                <div class="mc-body">
+
+                <div class="mp-body">
                     <svg class="ring" width="78" height="78" viewBox="0 0 78 78" role="img"
-                         aria-label="@ModeName(r.Mode) @Pct(r.PassedPercent) percent passed">
+                         aria-label="@ModeName(r.Mode): @Pct(r.PassedPercent) percent passed">
                         <circle class="track" cx="39" cy="39" r="30" stroke-width="7"></circle>
                         <circle class="fill" cx="39" cy="39" r="30" stroke-width="7"
                                 stroke-dasharray="188.5"
                                 stroke-dashoffset="@Offset(r.PassedPercent)"></circle>
                         <text x="39" y="44" text-anchor="middle">@Pct(r.PassedPercent)%</text>
                     </svg>
-                    <div>
-                        <div class="mc-frac"><b>@N(r.Passed)</b><span> / @N(r.Total)</span></div>
-                        <div class="mc-sub">@N(r.Attempted) attempted</div>
+
+                    <div class="mp-bars">
+                        <div class="bar">
+                            <i style="width:@W(r.Passed, r.Total); background:@colour"></i>
+                            <i style="width:@W(r.Attempted, r.Total); background:var(--warn)"></i>
+                            <i style="width:@W(r.Untouched, r.Total); background:var(--untouched)"></i>
+                        </div>
+                        <div class="seg-legend">
+                            <span><i style="background:@colour"></i>Passed @N(r.Passed)</span>
+                            <span><i style="background:var(--warn)"></i>Attempted @N(r.Attempted) <span class="qual">(approximate)</span></span>
+                            <span><i class="untouched"></i>Untouched @N(r.Untouched)</span>
+                        </div>
                     </div>
                 </div>
-            </a>
+            </div>
         }
     </div>
-
-    @foreach (var r in _rows.OrderByDescending(x => x.PlayedPercent))
-    {
-        var colour = ModeColour(r.Mode);
-        <div class="panel">
-            <div class="panel-title">
-                <h2>@ModeName(r.Mode)</h2>
-                <b>@Pct(r.PlayedPercent)&#37; touched · @N(r.Untouched) never loaded</b>
-            </div>
-            <div class="bar">
-                <i style="width:@W(r.Passed, r.Total); background:@colour"></i>
-                <i style="width:@W(r.Attempted, r.Total); background:var(--warn)"></i>
-                <i style="width:@W(r.Untouched, r.Total); background:var(--untouched)"></i>
-            </div>
-            <div class="seg-legend">
-                <span><i style="background:@colour"></i>Passed @N(r.Passed)</span>
-                <span><i style="background:var(--warn)"></i>Attempted @N(r.Attempted) <span class="qual">(approximate)</span></span>
-                <span><i class="untouched"></i>Untouched @N(r.Untouched)</span>
-            </div>
-        </div>
-    }
 
     <p class="footnote"><b>Attempted is approximate.</b> Playcounts carry no timestamps, so plays from before a map was ranked cannot be told apart from plays since, and they are counted here either way.</p>
 }
