@@ -30,6 +30,8 @@ abandoned.
 that you can drop into an osu! profile, a GitHub README, or anywhere else that renders
 an image.
 
+![osu!PersonalTracker](https://osu-tracker.tail52d435.ts.net/badge.png?mode=fruits)
+
 ## How completion is counted
 
 The rules are deliberately strict, and are applied in exactly one place in the code so
