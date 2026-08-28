@@ -140,7 +140,8 @@ public sealed class ProgressQueryService(IDbContextFactory<TrackerDbContext> dbF
     }
 
     /// <summary>Sets with some but not all difficulties passed, closest to done first.</summary>
-    public async Task<List<NearlyDoneSet>> GetNearlyDoneAsync(GameMode mode, int take = 8, CancellationToken ct = default)
+    public async Task<List<NearlyDoneSet>> GetNearlyDoneAsync(
+        GameMode mode, int take = 8, int skip = 0, CancellationToken ct = default)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct);
 
@@ -165,10 +166,42 @@ public sealed class ProgressQueryService(IDbContextFactory<TrackerDbContext> dbF
                           .Where(x => x.Done > 0 && x.Done < x.Total)
                           .OrderBy(x => x.Total - x.Done)
                           .ThenByDescending(x => x.Done)
+                          // Remaining and done alone leave hundreds of rows tied, and SQLite
+                          // is free to break a tie differently per query — which, now that
+                          // this list pages, would show one set twice and hide another. The
+                          // id is what makes "the next 12" mean the next 12.
+                          .ThenBy(x => x.Id)
+                          .Skip(skip)
                           .Take(take)
                           .ToListAsync(ct);
 
         return rows.Select(r => new NearlyDoneSet(r.Id, r.Artist, r.Title, r.Total, r.Done)).ToList();
+    }
+
+    /// <summary>
+    /// How many sets are part-way through, so the list can say what it is a slice of.
+    ///
+    /// The shape above is repeated here rather than shared. Projecting that grouping into
+    /// a named type — the obvious way to hand both methods one query — makes EF inline the
+    /// Passed subquery back into the Count and the whole thing stops translating. Same
+    /// bargain as the band expression above: verbose beats broken. If the definition of
+    /// part-way through moves, it has to move in both places.
+    /// </summary>
+    public async Task<int> GetNearlyDoneCountAsync(GameMode mode, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+
+        return await (from b in Counted(db, mode)
+                      join bs in db.Beatmapsets on b.BeatmapsetId equals bs.Id
+                      select new
+                      {
+                          bs.Id,
+                          Passed = db.Scores.Any(sc => sc.BeatmapId == b.Id && sc.CountsAsPass)
+                      })
+                      .GroupBy(x => x.Id)
+                      .Select(g => new { Total = g.Count(), Done = g.Count(x => x.Passed) })
+                      .Where(x => x.Done > 0 && x.Done < x.Total)
+                      .CountAsync(ct);
     }
 }
 

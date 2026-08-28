@@ -84,7 +84,7 @@ else
     </div>
 
     <div class="split">
-        <div class="panel">
+        <div class="panel" style="--mc:@Colour(_mode)">
             <div class="panel-title"><h2>Pace</h2><b>last 30 days</b></div>
             @if (_recentPasses == 0)
             {
@@ -92,24 +92,33 @@ else
                     No qualifying passes in the last 30 days, so there is no rate to project from.
                 </div>
             }
+            else if (Remaining == 0)
+            {
+                <div class="pace-eta">
+                    <div class="pace-eta-label">Projected finish</div>
+                    <div class="pace-eta-date">Done</div>
+                    <div class="pace-eta-away">Every counted difficulty in @ModeName(_mode) is passed.</div>
+                </div>
+            }
             else
             {
-                var perWeek = _recentPasses / (30 / 7.0);
-                var weeks = _row.Untouched + _row.Attempted <= 0 ? 0 : (_row.Untouched + _row.Attempted) / perWeek;
-                <div class="pace-big">+@N(_recentPasses)<span>/ 30d</span></div>
-                <div class="pace-sub">
-                    @Pct(perWeek) per week · @N(_row.Untouched + _row.Attempted) left
-                    @if (weeks > 0 && weeks < 52 * 200)
-                    {
-                        <br />
-                        <span>at this rate: @DateTimeOffset.UtcNow.AddDays(weeks * 7).ToString("yyyy-MM")</span>
-                    }
+                var eta = PaceProjection.Project(Remaining, PerWeek, DateTimeOffset.UtcNow);
+                <div class="pace-eta">
+                    <div class="pace-eta-label">Projected finish</div>
+                    <div class="pace-eta-date">@eta.Headline</div>
+                    <div class="pace-eta-away">@eta.Away · @N(Remaining) difficulties to go</div>
+                </div>
+                <div class="pace-rate">
+                    <b>+@N(_recentPasses)</b> passed in the last 30 days · @Pct(PerWeek) per week
                 </div>
             }
         </div>
 
         <div class="panel">
-            <div class="panel-title"><h2>Nearly done</h2><b>sets with one or two left</b></div>
+            <div class="panel-title">
+                <h2>Nearly done</h2>
+                <b>@(_nearlyTotal == 0 ? "sets part-way through" : N(_nearlyTotal) + " sets part-way through")</b>
+            </div>
             @if (_nearly is null || _nearly.Count == 0)
             {
                 <div class="pace-none">No partially-completed sets.</div>
@@ -120,10 +129,26 @@ else
                     @foreach (var s in _nearly)
                     {
                         <a class="nearly-row" href="https://osu.ppy.sh/beatmapsets/@s.BeatmapsetId" target="_blank" rel="noopener">
-                            <span class="nearly-title">@s.Title</span>
-                            <span class="nearly-count">@s.Done/@s.Total</span>
+                            <span class="nearly-text">
+                                <span class="nearly-title">@s.Title</span>
+                                <span class="nearly-artist">@s.Artist</span>
+                            </span>
+                            <span class="nearly-count">
+                                @s.Done/@s.Total
+                                <span class="nearly-left">@s.Remaining left</span>
+                            </span>
                         </a>
                     }
+                </div>
+
+                <div class="nearly-more">
+                    @if (_nearly.Count < _nearlyTotal)
+                    {
+                        <button class="f" @onclick="LoadMoreNearly" disabled="@_loadingMore">
+                            @(_loadingMore ? "loading…" : "show " + NextBatchSize + " more")
+                        </button>
+                    }
+                    <span class="nearly-shown">showing @N(_nearly.Count) of @N(_nearlyTotal)</span>
                 </div>
             }
         </div>
@@ -137,9 +162,14 @@ else
     private ModeProgress? _row;
     private List<StarBand>? _bands;
     private List<NearlyDoneSet>? _nearly;
+    private int _nearlyTotal;
+    private bool _loadingMore;
     private int _recentPasses;
     private int _maxBand;
     private string? _wall;
+
+    private const int FirstBatch = 8;
+    private const int MoreBatch = 12;
 
     protected override async Task OnParametersSetAsync()
     {
@@ -156,12 +186,41 @@ else
         var all = await Progress.GetAllModesAsync();
         _row = all.First(r => r.Mode == _mode);
         _bands = await Progress.GetStarBandsAsync(_mode);
-        _nearly = await Progress.GetNearlyDoneAsync(_mode);
+        _nearly = await Progress.GetNearlyDoneAsync(_mode, FirstBatch);
+        _nearlyTotal = await Progress.GetNearlyDoneCountAsync(_mode);
+        _loadingMore = false;
         _recentPasses = await Progress.GetRecentPassCountAsync(_mode, 30);
 
         _maxBand = _bands.Count == 0 ? 0 : _bands.Max(b => b.Total);
         _wall = FindWall(_bands);
     }
+
+    private int NextBatchSize => Math.Min(MoreBatch, _nearlyTotal - (_nearly?.Count ?? 0));
+
+    /// <summary>
+    /// Fetches the next slice rather than re-fetching a longer list: the grouping behind
+    /// it walks every counted difficulty in the mode, which is 130,000 rows for osu!.
+    /// </summary>
+    private async Task LoadMoreNearly()
+    {
+        if (_nearly is null || _loadingMore) return;
+
+        _loadingMore = true;
+        try
+        {
+            var next = await Progress.GetNearlyDoneAsync(_mode, MoreBatch, _nearly.Count);
+            _nearly.AddRange(next);
+
+            // A sync between page load and this click can shrink the list under us.
+            // Believe the empty page rather than leaving a button that fetches nothing.
+            if (next.Count == 0) _nearlyTotal = _nearly.Count;
+        }
+        finally { _loadingMore = false; }
+    }
+
+    private double PerWeek => _recentPasses / (30 / 7.0);
+
+    private int Remaining => _row is null ? 0 : _row.Untouched + _row.Attempted;
 
     /// <summary>
     /// The wall is the first band where the pass rate collapses relative to the bands
