@@ -5,7 +5,6 @@
 @inject BrowseQueryService Query
 @inject NavigationManager Nav
 @rendermode InteractiveServer
-@implements IDisposable
 
 <PageTitle>Browse · osu!PersonalTracker</PageTitle>
 
@@ -40,11 +39,21 @@
         <option value="played" selected="@(_filter.Sort == BrowseSort.PlaysDesc)">most played</option>
         <option value="newest" selected="@(_filter.Sort == BrowseSort.RankedDesc)">newest ranked</option>
         <option value="oldest" selected="@(_filter.Sort == BrowseSort.RankedAsc)">oldest ranked</option>
+        <option value="shortest" selected="@(_filter.Sort == BrowseSort.LengthAsc)">shortest first</option>
+        <option value="longest" selected="@(_filter.Sort == BrowseSort.LengthDesc)">longest first</option>
     </select>
 
     <input class="f f-search" type="search" aria-label="Search beatmaps"
            placeholder="search title, artist, mapper, difficulty…"
-           value="@_filter.Search" @oninput="OnSearchInput" />
+           value="@_searchText"
+           @oninput="e => _searchText = e.Value?.ToString() ?? string.Empty"
+           @onkeydown="OnSearchKey" />
+    <button class="f f-go" style="--mc:@Colour(_filter.Mode)" @onclick="RunSearch"
+            disabled="@(!SearchPending)">search</button>
+    @if (!string.IsNullOrEmpty(_filter.Search))
+    {
+        <button class="f" @onclick="ClearSearch">clear</button>
+    }
 </div>
 
 @if (_result is null)
@@ -71,6 +80,7 @@ else
                 <tr>
                     <th>Beatmap</th><th>Difficulty</th>
                     <th class="r"><span aria-hidden="true">★</span><span class="sr-only">Star rating</span></th>
+                    <th class="r">Length</th>
                     <th>Status</th><th class="r">Grade</th><th class="r">Acc</th>
                     <th>Mods</th><th class="r">Plays</th><th class="r">Ranked</th>
                 </tr>
@@ -86,6 +96,7 @@ else
                         </td>
                         <td class="mono">@r.Difficulty</td>
                         <td class="r mono">@r.StarRating.ToString("F2", CultureInfo.InvariantCulture)</td>
+                        <td class="r mono">@Duration(r.TotalLength)</td>
                         <td><span class="chip @ChipClass(r.State)">@StatusName(r.State)</span></td>
                         <td class="r">
                             @if (r.Grade is null)
@@ -122,7 +133,7 @@ else
                 @if (_result.Rows.Count == 0)
                 {
                     <tr>
-                        <td colspan="9" class="empty">
+                        <td colspan="10" class="empty">
                             Nothing matches those filters.
                             @if (HasFilters)
                             {
@@ -169,7 +180,10 @@ else
     private BrowseFilter _filter = new();
     private BrowseResult? _result;
     private Dictionary<BrowseStatus, int>? _counts;
-    private CancellationTokenSource? _searchDebounce;
+
+    // What is in the box right now, which is deliberately not what the table shows:
+    // the query only moves when the user asks for it.
+    private string _searchText = string.Empty;
 
     private const string Dash = "—";
 
@@ -194,6 +208,10 @@ else
 
         var modeChanged = _counts is null || next.Mode != _filter.Mode;
         _filter = next;
+
+        // The URL is the source of truth, so the box follows it — on a shared link, the
+        // back button, or any other filter that rewrites the query string.
+        _searchText = _filter.Search ?? string.Empty;
 
         if (modeChanged) _counts = await Query.GetStatusCountsAsync(_filter.Mode);
         _result = await Query.QueryAsync(_filter);
@@ -231,43 +249,40 @@ else
         Apply(_filter with { Sort = ParseSort(e.Value?.ToString()), Page = 0 });
 
     /// <summary>
-    /// Search runs as you type. The field used to commit on blur or Enter, with nothing on
-    /// screen saying so, which reads as a search box that does not work.
+    /// Whether the box holds something the table is not showing yet — which is also the
+    /// only time the search button does anything, so it is disabled otherwise.
     /// </summary>
-    private void OnSearchInput(ChangeEventArgs e)
+    private bool SearchPending => Normalise(_searchText) != _filter.Search;
+
+    /// <summary>
+    /// Search commits on the button or Enter, never on a keystroke. Typing a nine-letter
+    /// title used to cost nine full-table queries over 130,937 rows to reach one answer.
+    /// </summary>
+    private void RunSearch()
     {
-        var text = e.Value?.ToString();
-
-        _searchDebounce?.Cancel();
-        _searchDebounce?.Dispose();
-        _searchDebounce = new CancellationTokenSource();
-        var token = _searchDebounce.Token;
-
-        _ = Task.Run(async () =>
-        {
-            try
-            {
-                await Task.Delay(TimeSpan.FromMilliseconds(400), token);
-                // Replace rather than push: eight keystrokes should not cost eight
-                // presses of the back button to undo.
-                await InvokeAsync(() => Apply(_filter with { Search = text, Page = 0 }, replace: true));
-            }
-            catch (OperationCanceledException) { }
-            catch (ObjectDisposedException) { }
-        }, token);
+        if (!SearchPending) return;
+        Apply(_filter with { Search = Normalise(_searchText), Page = 0 });
     }
+
+    private void OnSearchKey(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter") RunSearch();
+    }
+
+    private void ClearSearch()
+    {
+        _searchText = string.Empty;
+        Apply(_filter with { Search = null, Page = 0 });
+    }
+
+    private static string? Normalise(string? s) =>
+        string.IsNullOrWhiteSpace(s) ? null : s.Trim();
 
     /// <summary>Anything the user chose, as opposed to how the page opens.</summary>
     private bool HasFilters => _filter != Defaults with { Mode = _filter.Mode };
 
     /// <summary>Each change is its own history entry, so back means "undo that filter".</summary>
-    private void Apply(BrowseFilter f, bool replace = false) => Nav.NavigateTo(UrlFor(f), replace: replace);
-
-    public void Dispose()
-    {
-        _searchDebounce?.Cancel();
-        _searchDebounce?.Dispose();
-    }
+    private void Apply(BrowseFilter f) => Nav.NavigateTo(UrlFor(f));
 
     private string UrlFor(BrowseFilter f) =>
         Nav.GetUriWithQueryParameters(Nav.ToAbsoluteUri("browse").ToString(), new Dictionary<string, object?>
@@ -306,6 +321,8 @@ else
         "played" => BrowseSort.PlaysDesc,
         "newest" => BrowseSort.RankedDesc,
         "oldest" => BrowseSort.RankedAsc,
+        "shortest" => BrowseSort.LengthAsc,
+        "longest" => BrowseSort.LengthDesc,
         _ => Defaults.Sort
     };
 
@@ -330,10 +347,23 @@ else
         BrowseSort.PlaysDesc => "played",
         BrowseSort.RankedDesc => "newest",
         BrowseSort.RankedAsc => "oldest",
+        BrowseSort.LengthAsc => "shortest",
+        BrowseSort.LengthDesc => "longest",
         _ => "easiest"
     };
 
     private static string N(int v) => v.ToString("N0", CultureInfo.InvariantCulture);
+
+    /// <summary>Map length as the client shows it: m:ss, and h:mm:ss for the marathons.</summary>
+    private static string Duration(int seconds)
+    {
+        if (seconds <= 0) return Dash;
+
+        var t = TimeSpan.FromSeconds(seconds);
+        return t.TotalHours >= 1
+            ? $"{(int)t.TotalHours}:{t.Minutes:00}:{t.Seconds:00}"
+            : $"{(int)t.TotalMinutes}:{t.Seconds:00}";
+    }
 
     private static string ChipClass(BrowseStatus s) => s switch
     {

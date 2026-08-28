@@ -14,7 +14,10 @@ public enum BrowseSort
     /// <summary>Maps you keep loading and keep not finishing.</summary>
     PlaysDesc,
     RankedDesc,
-    RankedAsc
+    RankedAsc,
+    /// <summary>Short maps first — the ones that fit in the time you actually have.</summary>
+    LengthAsc,
+    LengthDesc
 }
 
 public sealed record BrowseFilter
@@ -59,7 +62,7 @@ public sealed class BrowseQueryService(IDbContextFactory<TrackerDbContext> dbFac
             {
                 b.Id, b.BeatmapsetId, bs.Artist, bs.Title, bs.Creator,
                 Difficulty = b.DifficultyName, b.StarRating, b.TotalLength,
-                bs.RankedDate,
+                bs.RankedDate, bs.RankedDateUnix,
                 HasScore = s != null,
                 Passed = s != null && s.CountsAsPass,
                 // Every score column needs an explicit null guard. PlayedAt and Accuracy
@@ -101,8 +104,11 @@ public sealed class BrowseQueryService(IDbContextFactory<TrackerDbContext> dbFac
             BrowseSort.StarsAsc => q.OrderBy(x => x.StarRating).ThenBy(x => x.Id),
             BrowseSort.StarsDesc => q.OrderByDescending(x => x.StarRating).ThenBy(x => x.Id),
             BrowseSort.PlaysDesc => q.OrderByDescending(x => x.Plays).ThenBy(x => x.Id),
-            BrowseSort.RankedDesc => q.OrderByDescending(x => x.RankedDate).ThenBy(x => x.Id),
-            BrowseSort.RankedAsc => q.OrderBy(x => x.RankedDate).ThenBy(x => x.Id),
+            // Sorted through the shadow integer: SQLite cannot ORDER BY a DateTimeOffset.
+            BrowseSort.RankedDesc => q.OrderByDescending(x => x.RankedDateUnix).ThenBy(x => x.Id),
+            BrowseSort.RankedAsc => q.OrderBy(x => x.RankedDateUnix).ThenBy(x => x.Id),
+            BrowseSort.LengthAsc => q.OrderBy(x => x.TotalLength).ThenBy(x => x.Id),
+            BrowseSort.LengthDesc => q.OrderByDescending(x => x.TotalLength).ThenBy(x => x.Id),
             _ => q.OrderBy(x => x.StarRating).ThenBy(x => x.Id)
         };
 

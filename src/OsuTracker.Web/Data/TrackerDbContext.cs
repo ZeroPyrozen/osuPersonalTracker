@@ -20,7 +20,8 @@ public class TrackerDbContext(DbContextOptions<TrackerDbContext> options) : DbCo
             e.Property(x => x.Id).ValueGeneratedNever();
             e.Property(x => x.Status).HasConversion<int>();
             e.HasIndex(x => x.Status);
-            e.HasIndex(x => x.RankedDate);
+            // The text column is never filtered or sorted on; the shadow integer is both.
+            e.HasIndex(x => x.RankedDateUnix);
         });
 
         b.Entity<Beatmap>(e =>
