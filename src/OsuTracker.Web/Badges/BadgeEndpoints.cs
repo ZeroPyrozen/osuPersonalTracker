@@ -1,7 +1,9 @@
 using System.Collections.Concurrent;
 using System.Globalization;
+using System.Net;
 using System.Net.Mime;
 using System.Text;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.Net.Http.Headers;
 using OsuTracker.Web.Services;
 
@@ -20,21 +22,100 @@ public static class BadgeEndpoints
     /// </summary>
     private const int MaxAgeSeconds = 60;
 
+    /// <summary>Named so Program.cs and the endpoints cannot drift apart on the string.</summary>
+    public const string RateLimitPolicy = "badge";
+
+    /// <summary>Above this a PNG rasterise roughly doubles again in cost.</summary>
+    private const int ExpensiveScale = 3;
+
     public static void MapBadgeEndpoints(this WebApplication app)
     {
         app.MapGet("/badge.svg", (HttpContext ctx, BadgeService badges, CancellationToken ct) =>
-            WriteAsync(ctx, badges, null, png: false, ct));
+            WriteAsync(ctx, badges, null, png: false, ct))
+            .RequireRateLimiting(RateLimitPolicy);
 
         app.MapGet("/badge.png", (HttpContext ctx, BadgeService badges, CancellationToken ct) =>
-            WriteAsync(ctx, badges, null, png: true, ct));
+            WriteAsync(ctx, badges, null, png: true, ct))
+            .RequireRateLimiting(RateLimitPolicy);
 
         // Path form as well as the query form: some embedders (osu!'s own BBCode among
         // them) are happier with a URL that ends in a real file extension.
         app.MapGet("/badge/{mode}.svg", (HttpContext ctx, string mode, BadgeService badges, CancellationToken ct) =>
-            WriteAsync(ctx, badges, mode, png: false, ct));
+            WriteAsync(ctx, badges, mode, png: false, ct))
+            .RequireRateLimiting(RateLimitPolicy);
 
         app.MapGet("/badge/{mode}.png", (HttpContext ctx, string mode, BadgeService badges, CancellationToken ct) =>
-            WriteAsync(ctx, badges, mode, png: true, ct));
+            WriteAsync(ctx, badges, mode, png: true, ct))
+            .RequireRateLimiting(RateLimitPolicy);
+    }
+
+    /// <summary>What a request costs to serve when the raster cache misses.</summary>
+    public enum BadgeCost
+    {
+        /// <summary>SVG: built from the cached snapshot, a few KB, no rasterising at all.</summary>
+        Vector,
+        /// <summary>PNG at embed scale — measured at ~210 ms and ~100 KB on a miss.</summary>
+        Raster,
+        /// <summary>PNG at download scale — ~450 KB and up to ~450 ms on a miss.</summary>
+        LargeRaster
+    }
+
+    /// <summary>
+    /// How dear this request is, decided before the handler runs so the limiter can bucket
+    /// it. Read from the raw query rather than from BadgeOptions, which does not exist yet
+    /// at partitioning time.
+    ///
+    /// Scale is the discriminator rather than "will it miss the cache", which is the thing
+    /// that actually costs — but is unknowable this early. It correlates well enough: an
+    /// honest embedder asks for one URL over and over and is served from cache whatever
+    /// its tier, while a caller varying the accent to force misses pays the tier's price
+    /// every time.
+    /// </summary>
+    public static BadgeCost CostOf(HttpContext ctx)
+    {
+        if (ctx.Request.Path.Value?.EndsWith(".png", StringComparison.OrdinalIgnoreCase) != true)
+            return BadgeCost.Vector;
+
+        return ParseScale(ctx.Request.Query["scale"].ToString()) >= ExpensiveScale
+            ? BadgeCost.LargeRaster
+            : BadgeCost.Raster;
+    }
+
+    /// <summary>Requests per minute allowed per client, per tier.</summary>
+    public static int AllowancePerMinute(BadgeCost cost) => cost switch
+    {
+        // A page embedding the badge fetches it once and then honours max-age for a
+        // minute, so even a busy embedder stays far under these.
+        BadgeCost.Vector => 60,
+        BadgeCost.Raster => 30,
+        // A download is a handful of clicks, never a stream.
+        BadgeCost.LargeRaster => 12,
+        _ => 30
+    };
+
+    /// <summary>
+    /// Whether the caller is on this machine or this LAN. Only meaningful once
+    /// ForwardedHeaders has run — before that every Funnel request looks like loopback,
+    /// which is exactly the mistake this guards against.
+    /// </summary>
+    private static bool IsLocal(HttpContext ctx)
+    {
+        var ip = ctx.Connection.RemoteIpAddress;
+        if (ip is null) return false;
+        if (IPAddress.IsLoopback(ip)) return true;
+
+        if (ip.IsIPv4MappedToIPv6) ip = ip.MapToIPv4();
+
+        if (ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
+        {
+            var b = ip.GetAddressBytes();
+            return b[0] == 10
+                || (b[0] == 172 && b[1] >= 16 && b[1] <= 31)
+                || (b[0] == 192 && b[1] == 168)
+                || (b[0] == 169 && b[1] == 254);
+        }
+
+        return ip.IsIPv6LinkLocal || ip.IsIPv6UniqueLocal;
     }
 
     private static async Task<IResult> WriteAsync(
@@ -48,7 +129,13 @@ public static class BadgeEndpoints
             q["accent"].ToString());
 
         var scale = png ? ParseScale(q["scale"].ToString()) : 1;
-        var fresh = q["refresh"].ToString() is "1" or "true";
+
+        // refresh=1 skips the snapshot TTL and re-runs every aggregate over the whole
+        // catalogue — 200x the cost of the cached answer, and the cache is the only thing
+        // standing between a public URL and the database. Nobody embedding a badge needs
+        // it; it exists so the owner can see a sync land immediately. So it stays, but
+        // only for whoever is actually here.
+        var fresh = q["refresh"].ToString() is "1" or "true" && IsLocal(ctx);
 
         var snap = await badges.GetSnapshotAsync(options.Mode, fresh, ct);
         var etag = Tag(BadgeService.ETag(snap, options), png, scale);
@@ -102,7 +189,12 @@ public static class BadgeRasterizer
 {
     // Rasterising is orders of magnitude dearer than building the SVG, and the same
     // handful of URLs get hit over and over, so finished bytes are worth holding.
-    private const int MaxEntries = 24;
+    //
+    // 24 was under even the honest variety: four modes by two layouts by two themes is
+    // sixteen badges before a single scale is chosen, so the legitimate set could evict
+    // itself. Sized to hold all of it now, which also means a miss is a real signal that
+    // someone is varying the accent rather than embedding a badge.
+    private const int MaxEntries = 64;
     private static readonly ConcurrentDictionary<string, byte[]> Cache = new();
 
     public static byte[] ToPng(string key, string svg, int width, int height, int scale)

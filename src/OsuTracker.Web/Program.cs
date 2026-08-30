@@ -1,3 +1,6 @@
+using System.Net;
+using System.Threading.RateLimiting;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.EntityFrameworkCore;
 using OsuTracker.Web.Badges;
 using OsuTracker.Web.Components;
@@ -9,6 +12,56 @@ using OsuTracker.Web.Sync;
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddRazorComponents().AddInteractiveServerComponents();
+
+// ---- behind the Funnel ------------------------------------------------------
+// Tailscale Funnel proxies every public request to 127.0.0.1, so without this the whole
+// internet arrives as one client: rate limits would bucket strangers together with the
+// LAN, and nothing downstream could tell them apart. Loopback is the only hop trusted,
+// and only one of them, so a forwarded header from further out cannot spoof its way in.
+builder.Services.Configure<ForwardedHeadersOptions>(o =>
+{
+    o.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
+    o.ForwardLimit = 1;
+    o.KnownProxies.Clear();
+    o.KnownProxies.Add(IPAddress.Loopback);
+    o.KnownProxies.Add(IPAddress.IPv6Loopback);
+});
+
+// ---- rate limiting ----------------------------------------------------------
+// Only the badge endpoints. They are the anonymous, publicly embedded, CPU-shaped part
+// of the app; the pages behind them ride a Blazor circuit whose SignalR traffic a naive
+// limiter would sever mid-session.
+builder.Services.AddRateLimiter(o =>
+{
+    o.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    o.OnRejected = (ctx, _) =>
+    {
+        ctx.HttpContext.Response.Headers.RetryAfter = "60";
+        return ValueTask.CompletedTask;
+    };
+
+    o.AddPolicy(BadgeEndpoints.RateLimitPolicy, ctx =>
+    {
+        // Post-ForwardedHeaders this is the real remote client, so one abusive caller
+        // cannot spend everyone else's budget.
+        var client = ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+        var cost = BadgeEndpoints.CostOf(ctx);
+        var allowance = BadgeEndpoints.AllowancePerMinute(cost);
+
+        // Separate buckets, so exhausting the dear one cannot lock a viewer out of the
+        // cheap badge they actually came for.
+        return RateLimitPartition.GetTokenBucketLimiter(
+            $"{cost}|{client}",
+            _ => new TokenBucketRateLimiterOptions
+            {
+                TokenLimit = allowance,
+                TokensPerPeriod = allowance,
+                ReplenishmentPeriod = TimeSpan.FromMinutes(1),
+                QueueLimit = 0,
+                AutoReplenishment = true
+            });
+    });
+});
 
 // ---- data -------------------------------------------------------------------
 // WAL so a long sync never blocks the UI from reading.
@@ -60,6 +113,10 @@ await using (var scope = app.Services.CreateAsyncScope())
 }
 await EnableWalAsync(app.Services);
 
+// First in the pipeline: everything after this point, rate limiting included, has to
+// see the real client address rather than the proxy's.
+app.UseForwardedHeaders();
+
 if (!app.Environment.IsDevelopment())
 {
     app.UseExceptionHandler("/Error", createScopeForErrors: true);
@@ -67,6 +124,7 @@ if (!app.Environment.IsDevelopment())
 }
 
 app.UseHttpsRedirection();
+app.UseRateLimiter();
 app.UseAntiforgery();
 app.MapStaticAssets();
 app.MapBadgeEndpoints();
