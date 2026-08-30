@@ -103,7 +103,7 @@ public sealed class PlayCountSyncJob(
         catch (Exception ex)
         {
             log.LogError(ex, "Playcount sync failed");
-            await MarkAsync(SyncJobState.Failed, ex.Message, ct);
+            await MarkAsync(SyncJobState.Failed, SyncError.Describe(ex), ct);
             throw;
         }
     }

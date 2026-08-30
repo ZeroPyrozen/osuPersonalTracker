@@ -138,7 +138,7 @@ public sealed class CatalogSyncJob(
         catch (Exception ex)
         {
             log.LogError(ex, "Catalog sync failed");
-            await MarkAsync(SyncJobState.Failed, ex.Message, ct);
+            await MarkAsync(SyncJobState.Failed, SyncError.Describe(ex), ct);
             throw;
         }
     }

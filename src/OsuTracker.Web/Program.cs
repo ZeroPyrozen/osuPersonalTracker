@@ -11,7 +11,22 @@ using OsuTracker.Web.Sync;
 
 var builder = WebApplication.CreateBuilder(args);
 
-builder.Services.AddRazorComponents().AddInteractiveServerComponents();
+builder.Services.AddRazorComponents().AddInteractiveServerComponents(o =>
+{
+    // Every page here is interactive, so each visitor costs a server-side circuit — and
+    // the app is anonymous and publicly reachable. The defaults (100 circuits retained
+    // for 3 minutes after they disconnect) are sized for a server, not for a Pi that is
+    // also running a desktop.
+    //
+    // Retention exists so a blip does not lose your place. It costs little here: this
+    // app deliberately keeps its state in the URL, so a dropped circuit reloads into the
+    // same view rather than losing anything.
+    o.DisconnectedCircuitMaxRetained = 20;
+    o.DisconnectedCircuitRetentionPeriod = TimeSpan.FromMinutes(2);
+
+    // Never on: it would put exception detail in the browser of whoever caused it.
+    o.DetailedErrors = false;
+});
 
 // ---- behind the Funnel ------------------------------------------------------
 // Tailscale Funnel proxies every public request to 127.0.0.1, so without this the whole
@@ -39,6 +54,33 @@ builder.Services.AddRateLimiter(o =>
         ctx.HttpContext.Response.Headers.RetryAfter = "60";
         return ValueTask.CompletedTask;
     };
+
+    // Retaining fewer disconnected circuits bounds the pool an abandoned session leaves
+    // behind, but nothing bounds circuits that are simply held open. Meter the handshake
+    // that creates them instead: /_blazor/negotiate is a plain POST that happens once per
+    // page load, so capping it slows mass circuit creation without touching the WebSocket
+    // an established session is already using. Everything else is explicitly unlimited.
+    o.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(ctx =>
+    {
+        var path = ctx.Request.Path;
+        if (!path.StartsWithSegments("/_blazor")
+            || path.Value?.EndsWith("/negotiate", StringComparison.OrdinalIgnoreCase) != true)
+            return RateLimitPartition.GetNoLimiter("unmetered");
+
+        var client = ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+        return RateLimitPartition.GetTokenBucketLimiter(
+            $"negotiate|{client}",
+            _ => new TokenBucketRateLimiterOptions
+            {
+                // Enhanced navigation reuses one circuit across link clicks, so a person
+                // negotiates on full page loads only — nowhere near this.
+                TokenLimit = 20,
+                TokensPerPeriod = 20,
+                ReplenishmentPeriod = TimeSpan.FromMinutes(1),
+                QueueLimit = 0,
+                AutoReplenishment = true
+            });
+    });
 
     o.AddPolicy(BadgeEndpoints.RateLimitPolicy, ctx =>
     {

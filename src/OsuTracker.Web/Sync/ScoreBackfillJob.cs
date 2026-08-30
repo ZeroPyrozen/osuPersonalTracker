@@ -127,7 +127,7 @@ public sealed class ScoreBackfillJob(
         catch (Exception ex)
         {
             log.LogError(ex, "Backfill failed after {Done} maps", done);
-            await MarkAsync(jobName, SyncJobState.Failed, ex.Message, ct);
+            await MarkAsync(jobName, SyncJobState.Failed, SyncError.Describe(ex), ct);
             throw;
         }
     }

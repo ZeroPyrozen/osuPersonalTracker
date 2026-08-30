@@ -64,7 +64,7 @@ public sealed class RecentScoresJob(
         catch (Exception ex)
         {
             log.LogError(ex, "Recent scores poll failed");
-            await MarkAsync(SyncJobState.Failed, ex.Message, ct);
+            await MarkAsync(SyncJobState.Failed, SyncError.Describe(ex), ct);
             throw;
         }
     }
