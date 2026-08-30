@@ -44,7 +44,7 @@
     </select>
 
     <input class="f f-search" type="search" aria-label="Search beatmaps"
-           placeholder="search title, artist, mapper, difficulty…"
+           placeholder="@Placeholder"
            value="@_searchText"
            @oninput="e => _searchText = e.Value?.ToString() ?? string.Empty"
            @onkeydown="OnSearchKey" />
@@ -55,6 +55,30 @@
         <button class="f" @onclick="ClearSearch">clear</button>
     }
 </div>
+
+<details class="search-help">
+    <summary>search syntax</summary>
+    <div class="search-help-body">
+        <p>
+            Bare words match the title, artist, mapper or difficulty, and every word has to
+            match somewhere — <code>camellia cup</code> finds cup difficulties of a Camellia
+            map. Quote a phrase to keep it together: <code>"the quick brown"</code>.
+        </p>
+        <ul>
+            <li><code>artist=</code> <code>title=</code> <code>mapper=</code> <code>diff=</code> — one field only, e.g. <code>mapper=Vaqu</code></li>
+            <li><code>stars&gt;6</code> <code>ar&lt;9</code> <code>cs</code> <code>od</code> <code>hp</code> <code>bpm&gt;180</code> <code>combo</code> <code>plays</code> — with <code>&gt; &lt; &gt;= &lt;= =</code></li>
+            <li><code>length&lt;2:30</code> — seconds, or m:ss</li>
+            <li><code>ranked=2019</code> <code>ranked&gt;=2020-06</code> — year, month or day</li>
+            <li><code>status=ranked</code> or <code>status=approved</code></li>
+        </ul>
+        <p class="search-help-note">
+            <code>stars=6</code> means the whole sixth star band, since no one types a star
+            rating exactly; every other <code>=</code> is an exact match. Anything that is
+            not a filter is searched for as text, so a difficulty called
+            <code>100%</code> still finds itself.
+        </p>
+    </div>
+</details>
 
 @if (_result is null)
 {
@@ -67,6 +91,10 @@ else
         @if (_result.Total > _result.PageSize)
         {
             <span class="range"> · showing @N(FirstRowNumber)&ndash;@N(LastRowNumber)</span>
+        }
+        @if (SearchSummary() is { Length: > 0 } summary)
+        {
+            <span class="parsed"> · @summary</span>
         }
         @if (_filter.Status == BrowseStatus.Untouched && _filter.Sort == BrowseSort.StarsAsc)
         {
@@ -187,6 +215,10 @@ else
 
     private const string Dash = "—";
 
+    // Built in C# rather than written into the attribute: a literal < in Razor markup is a
+    // tag start, and escaping it as &lt; puts the entity itself in the box.
+    private const string Placeholder = "search, or filter: camellia stars>6 length<2:30";
+
     // Defaults stay out of the URL, so the everyday view is "/browse" rather than four
     // parameters that say nothing.
     private static readonly BrowseFilter Defaults = new();
@@ -274,6 +306,55 @@ else
         _searchText = string.Empty;
         Apply(_filter with { Search = null, Page = 0 });
     }
+
+    /// <summary>
+    /// How the box was read, shown next to the count. Without this a mistyped filter is
+    /// invisible: it falls back to being searched as text, and the only clue is a result
+    /// count that looks wrong for no reason.
+    /// </summary>
+    private string SearchSummary()
+    {
+        var parsed = BrowseSearch.Parse(_filter.Search);
+        if (parsed.IsEmpty) return "";
+
+        var parts = new List<string>();
+
+        foreach (var n in parsed.Numbers)
+            parts.Add($"{FieldName(n.Field)} {OpSymbol(n.Op)} {FieldValue(n)}");
+
+        foreach (var f in parsed.Fields)
+            parts.Add($"{f.Field.ToString().ToLowerInvariant()} contains “{f.Value}”");
+
+        if (parsed.Status is { } st) parts.Add($"status {st.ToString().ToLowerInvariant()}");
+
+        if (parsed.Words.Count > 0)
+            parts.Add("text " + string.Join(" + ", parsed.Words.Select(w => $"“{w}”")));
+
+        return string.Join(" · ", parts);
+    }
+
+    private static string FieldName(NumField f) => f switch
+    {
+        NumField.Stars => "★",
+        NumField.Length => "length",
+        NumField.Combo => "combo",
+        NumField.Ranked => "ranked",
+        _ => f.ToString().ToLowerInvariant()
+    };
+
+    private static string OpSymbol(SearchOp o) => o switch
+    {
+        SearchOp.Lt => "<", SearchOp.Lte => "≤",
+        SearchOp.Gt => ">", SearchOp.Gte => "≥", _ => "="
+    };
+
+    private static string FieldValue(NumFilter n) => n.Field switch
+    {
+        NumField.Length => Duration((int)n.Value),
+        NumField.Ranked => DateTimeOffset.FromUnixTimeSeconds((long)n.Value)
+            .ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+        _ => n.Value.ToString("0.##", CultureInfo.InvariantCulture)
+    };
 
     private static string? Normalise(string? s) =>
         string.IsNullOrWhiteSpace(s) ? null : s.Trim();

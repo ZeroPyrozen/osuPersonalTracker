@@ -62,6 +62,7 @@ public sealed class BrowseQueryService(IDbContextFactory<TrackerDbContext> dbFac
             {
                 b.Id, b.BeatmapsetId, bs.Artist, bs.Title, bs.Creator,
                 Difficulty = b.DifficultyName, b.StarRating, b.TotalLength,
+                b.MaxCombo, b.Ar, b.Cs, b.Od, b.Hp, b.Status, bs.Bpm,
                 bs.RankedDate, bs.RankedDateUnix,
                 HasScore = s != null,
                 Passed = s != null && s.CountsAsPass,
@@ -88,14 +89,52 @@ public sealed class BrowseQueryService(IDbContextFactory<TrackerDbContext> dbFac
         if (f.MinStars is not null) q = q.Where(x => x.StarRating >= f.MinStars);
         if (f.MaxStars is not null) q = q.Where(x => x.StarRating < f.MaxStars);
 
-        if (!string.IsNullOrWhiteSpace(f.Search))
+        var search = BrowseSearch.Parse(f.Search);
+
+        // Bare words are ANDed, and each has to appear in one of the four text columns —
+        // so "camellia cup" finds the cup difficulties of a Camellia map rather than
+        // everything matching either word.
+        foreach (var word in search.Words)
         {
-            var term = f.Search.Trim();
-            q = q.Where(x => EF.Functions.Like(x.Title, $"%{term}%")
-                          || EF.Functions.Like(x.Artist, $"%{term}%")
-                          || EF.Functions.Like(x.Creator, $"%{term}%")
-                          || EF.Functions.Like(x.Difficulty, $"%{term}%"));
+            var like = Contains(word);
+            q = q.Where(x => EF.Functions.Like(x.Title, like, LikeEscape)
+                          || EF.Functions.Like(x.Artist, like, LikeEscape)
+                          || EF.Functions.Like(x.Creator, like, LikeEscape)
+                          || EF.Functions.Like(x.Difficulty, like, LikeEscape));
         }
+
+        foreach (var field in search.Fields)
+        {
+            var like = Contains(field.Value);
+            q = field.Field switch
+            {
+                TextField.Artist => q.Where(x => EF.Functions.Like(x.Artist, like, LikeEscape)),
+                TextField.Title => q.Where(x => EF.Functions.Like(x.Title, like, LikeEscape)),
+                TextField.Creator => q.Where(x => EF.Functions.Like(x.Creator, like, LikeEscape)),
+                _ => q.Where(x => EF.Functions.Like(x.Difficulty, like, LikeEscape))
+            };
+        }
+
+        foreach (var n in search.Numbers)
+        {
+            // Ranked compares through the shadow integer, for the same reason the sort
+            // does: SQLite will not compare the DateTimeOffset it is stored as.
+            q = n.Field switch
+            {
+                NumField.Stars => Compare(q, x => x.StarRating, n),
+                NumField.Length => Compare(q, x => x.TotalLength, n),
+                NumField.Bpm => Compare(q, x => x.Bpm, n),
+                NumField.Ar => Compare(q, x => x.Ar, n),
+                NumField.Cs => Compare(q, x => x.Cs, n),
+                NumField.Od => Compare(q, x => x.Od, n),
+                NumField.Hp => Compare(q, x => x.Hp, n),
+                NumField.Combo => Compare(q, x => x.MaxCombo ?? 0, n),
+                NumField.Plays => Compare(q, x => x.Plays, n),
+                _ => Compare(q, x => x.RankedDateUnix ?? 0, n)
+            };
+        }
+
+        if (search.Status is { } wanted) q = q.Where(x => x.Status == wanted);
 
         var total = await q.CountAsync(ct);
 
@@ -126,6 +165,36 @@ public sealed class BrowseQueryService(IDbContextFactory<TrackerDbContext> dbFac
                 x.Grade, x.Accuracy, x.Mods, x.Plays, x.RankedDate, x.PassedAt))
                 .ToList(),
             total, page, f.PageSize);
+    }
+
+    /// <summary>
+    /// LIKE treats % and _ as wildcards, so a search for "100%" or "a_b" would quietly
+    /// mean something else — and a bare % is a full scan dressed up as a search term.
+    /// Escaping them makes the box mean what it says.
+    /// </summary>
+    private const string LikeEscape = "\\";
+
+    private static string Contains(string term) =>
+        "%" + term.Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_") + "%";
+
+    /// <summary>One place for the five operators, so each field only names its column.</summary>
+    private static IQueryable<T> Compare<T>(
+        IQueryable<T> q, System.Linq.Expressions.Expression<Func<T, double>> selector, NumFilter n)
+    {
+        var body = selector.Body;
+        var p = selector.Parameters;
+        var value = System.Linq.Expressions.Expression.Constant(n.Value);
+
+        var comparison = n.Op switch
+        {
+            SearchOp.Lt => System.Linq.Expressions.Expression.LessThan(body, value),
+            SearchOp.Lte => System.Linq.Expressions.Expression.LessThanOrEqual(body, value),
+            SearchOp.Gt => System.Linq.Expressions.Expression.GreaterThan(body, value),
+            SearchOp.Gte => System.Linq.Expressions.Expression.GreaterThanOrEqual(body, value),
+            _ => System.Linq.Expressions.Expression.Equal(body, value)
+        };
+
+        return q.Where(System.Linq.Expressions.Expression.Lambda<Func<T, bool>>(comparison, p));
     }
 
     /// <summary>Counts for the status filter chips, so each shows its own size.</summary>
