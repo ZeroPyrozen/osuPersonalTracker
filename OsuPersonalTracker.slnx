@@ -5,6 +5,9 @@
   <Folder Name="/src/">
     <Project Path="src/OsuTracker.Web/OsuTracker.Web.csproj" />
   </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/OsuTracker.Web.Tests/OsuTracker.Web.Tests.csproj" />
+  </Folder>
   <Folder Name="/spike/">
     <File Path="spike/README.md" />
     <Project Path="spike/OsuTracker.Spike/OsuTracker.Spike.csproj" />

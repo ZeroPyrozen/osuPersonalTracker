@@ -27,23 +27,42 @@ public sealed record BrowseSearch(
 {
     public static readonly BrowseSearch Empty = new([], [], [], null);
 
+    /// <summary>
+    /// Terms past this are ignored. Every term becomes one more nested WHERE, and EF walks
+    /// that nesting recursively: a few thousand one-letter words — a single anonymous GET —
+    /// overflowed the stack and took the whole process down, and a thousand already broke
+    /// SQLite's expression depth. Sixteen is far past any real search.
+    /// </summary>
+    public const int MaxTerms = 16;
+
+    /// <summary>Characters past this are ignored, so no single term becomes an outsized LIKE pattern.</summary>
+    public const int MaxLength = 256;
+
     public bool IsEmpty => Words.Count == 0 && Fields.Count == 0 && Numbers.Count == 0 && Status is null;
 
     /// <summary>
     /// Parsing is total, as everywhere else here: a term that means nothing as a filter is
     /// kept as a word rather than rejected. Someone searching for a map called "10:00" gets
-    /// a search, not an error message.
+    /// a search, not an error message. The same goes for the bounds above — an oversized
+    /// search is cut short, not refused.
     /// </summary>
     public static BrowseSearch Parse(string? raw)
     {
         if (string.IsNullOrWhiteSpace(raw)) return Empty;
+
+        if (raw.Length > MaxLength)
+        {
+            // Never cut between the halves of a surrogate pair.
+            var cut = char.IsHighSurrogate(raw[MaxLength - 1]) ? MaxLength - 1 : MaxLength;
+            raw = raw[..cut];
+        }
 
         var words = new List<string>();
         var fields = new List<TextFilter>();
         var numbers = new List<NumFilter>();
         BeatmapStatus? status = null;
 
-        foreach (var token in Tokenize(raw))
+        foreach (var token in Tokenize(raw).Take(MaxTerms))
         {
             var (key, op, value) = Split(token);
             if (key is null)
@@ -131,8 +150,13 @@ public sealed record BrowseSearch(
         _ => null
     };
 
+    /// <summary>
+    /// Finite numbers only. "nan", "infinity" and "1e999" all parse as doubles, but the value
+    /// is inlined into the SQL as a literal, and SQLite reads NaN or Infinity as a column
+    /// name — so the page failed with "no such column" for anyone opening that link.
+    /// </summary>
     private static double? ParseNumber(string v) =>
-        double.TryParse(v, NumberStyles.Float, CultureInfo.InvariantCulture, out var d) ? d : null;
+        double.TryParse(v, NumberStyles.Float, CultureInfo.InvariantCulture, out var d) && double.IsFinite(d) ? d : null;
 
     /// <summary>Seconds, or the m:ss the table shows — both are what someone would type.</summary>
     private static double? ParseLength(string v)
@@ -146,19 +170,27 @@ public sealed record BrowseSearch(
             if (!int.TryParse(p, NumberStyles.Integer, CultureInfo.InvariantCulture, out var n)) return null;
             total = total * 60 + n;
         }
-        return total;
+        return double.IsFinite(total) ? total : null;
     }
 
-    /// <summary>A year, a month or a day, as the half-open unix range it covers.</summary>
+    /// <summary>
+    /// A year, a month or a day, as the half-open unix range it covers. Every part that is
+    /// present has to be one: "2019-13" is a typo, not a request for all of 2019, and only by
+    /// staying text does it show up as one in the parsed summary.
+    /// </summary>
     private static (double From, double To)? ParseDate(string v)
     {
         var parts = v.Split('-');
-        if (!int.TryParse(parts[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out var year)
-            || year is < 2007 or > 2200)
-            return null;
+        if (parts.Length > 3) return null;
 
-        var month = parts.Length > 1 && int.TryParse(parts[1], out var m) && m is >= 1 and <= 12 ? m : (int?)null;
-        var day = parts.Length > 2 && int.TryParse(parts[2], out var d) && d is >= 1 and <= 31 ? d : (int?)null;
+        var values = new int[parts.Length];
+        for (var i = 0; i < parts.Length; i++)
+            if (!int.TryParse(parts[i], NumberStyles.None, CultureInfo.InvariantCulture, out values[i])) return null;
+
+        var year = values[0];
+        int? month = parts.Length > 1 ? values[1] : null;
+        int? day = parts.Length > 2 ? values[2] : null;
+        if (year is < 2007 or > 2200 || month is < 1 or > 12 || day is < 1 or > 31) return null;
 
         try
         {

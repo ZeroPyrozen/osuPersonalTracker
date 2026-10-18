@@ -25,11 +25,19 @@ public sealed record BadgeSnapshot(
     public double PlayedPercent => Total == 0 ? 0 : (Passed + Attempted) * 100.0 / Total;
 
     /// <summary>
-    /// Only the drawn numbers go in, so an ETag survives an unrelated sync but changes
-    /// the moment a badge would actually look different.
+    /// The date the banner prints, in the invariant culture: formatted in the server's own,
+    /// "yyyy" counts years in that culture's calendar, and a th-TH host printed 2569.
+    /// </summary>
+    public string UpdatedOn => GeneratedAt.UtcDateTime.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+
+    /// <summary>
+    /// Only what is drawn goes in, so an ETag survives an unrelated sync but changes the
+    /// moment a badge would actually look different. That includes the UPDATED date: it
+    /// was left out, so one strong ETag stood for a different SVG every day, and the PNG
+    /// cache, keyed on it, kept serving the first day's raster.
     /// </summary>
     public string Fingerprint => string.Create(CultureInfo.InvariantCulture,
-        $"{UserId}|{Mode}|{Total}|{Passed}|{Attempted}|{Untouched}|{RecentPasses}|" +
+        $"{UserId}|{Mode}|{Total}|{Passed}|{Attempted}|{Untouched}|{RecentPasses}|{UpdatedOn}|" +
         $"{string.Join(",", Modes.Select(m => $"{m.Mode}:{m.Passed}/{m.Total}"))}|" +
         $"{string.Join(",", Bands.Select(b => $"{b.Passed}/{b.Total}"))}");
 }

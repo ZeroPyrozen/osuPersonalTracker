@@ -2,6 +2,7 @@ using System.Net;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.EntityFrameworkCore;
+using OsuTracker.Web;
 using OsuTracker.Web.Badges;
 using OsuTracker.Web.Components;
 using OsuTracker.Web.Data;
@@ -67,7 +68,7 @@ builder.Services.AddRateLimiter(o =>
             || path.Value?.EndsWith("/negotiate", StringComparison.OrdinalIgnoreCase) != true)
             return RateLimitPartition.GetNoLimiter("unmetered");
 
-        var client = ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+        var client = ClientAddress.PartitionKey(ctx.Connection.RemoteIpAddress);
         return RateLimitPartition.GetTokenBucketLimiter(
             $"negotiate|{client}",
             _ => new TokenBucketRateLimiterOptions
@@ -85,8 +86,9 @@ builder.Services.AddRateLimiter(o =>
     o.AddPolicy(BadgeEndpoints.RateLimitPolicy, ctx =>
     {
         // Post-ForwardedHeaders this is the real remote client, so one abusive caller
-        // cannot spend everyone else's budget.
-        var client = ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+        // cannot spend everyone else's budget — and with IPv6 grouped by /64, cannot mint
+        // a fresh budget by changing address either.
+        var client = ClientAddress.PartitionKey(ctx.Connection.RemoteIpAddress);
         var cost = BadgeEndpoints.CostOf(ctx);
         var allowance = BadgeEndpoints.AllowancePerMinute(cost);
 

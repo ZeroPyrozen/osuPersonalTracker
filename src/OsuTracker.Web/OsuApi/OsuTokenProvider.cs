@@ -18,15 +18,12 @@ public sealed class OsuTokenProvider(IHttpClientFactory factory, IOptions<OsuApi
 
     public async Task<string> GetTokenAsync(CancellationToken ct)
     {
-        // Refresh a minute early rather than discovering expiry as a 401 mid-sweep.
-        if (_token is not null && DateTimeOffset.UtcNow < _expiresAt.AddMinutes(-1))
-            return _token;
+        if (IsFresh()) return _token!;
 
         await _gate.WaitAsync(ct);
         try
         {
-            if (_token is not null && DateTimeOffset.UtcNow < _expiresAt.AddMinutes(-1))
-                return _token;
+            if (IsFresh()) return _token!;
 
             var o = options.Value;
             using var http = factory.CreateClient("osu-token");
@@ -55,4 +52,12 @@ public sealed class OsuTokenProvider(IHttpClientFactory factory, IOptions<OsuApi
     }
 
     public void Invalidate() => _expiresAt = DateTimeOffset.MinValue;
+
+    /// <summary>
+    /// Refresh a minute early rather than discovering expiry as a 401 mid-sweep. The minute
+    /// goes on "now", never comes off the expiry: Invalidate() parks the expiry at MinValue,
+    /// and MinValue minus a minute does not exist — so after the first 401 every call threw
+    /// ArgumentOutOfRangeException, and the refresh that was meant to recover never ran.
+    /// </summary>
+    private bool IsFresh() => _token is not null && DateTimeOffset.UtcNow.AddMinutes(1) < _expiresAt;
 }

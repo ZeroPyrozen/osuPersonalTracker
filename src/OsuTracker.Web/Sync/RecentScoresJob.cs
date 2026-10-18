@@ -11,6 +11,9 @@ namespace OsuTracker.Web.Sync;
 /// tracker current forever — once backfill has run, this is the only job that needs to
 /// keep running. It is also the only path by which a brand-new NoFail pass on a map you
 /// have never beaten will ever be recorded, since backfill never revisits a map.
+///
+/// The window holds at most your newest 100 passes per mode, so it has to be polled more
+/// often than you can pass 100 maps in one mode: anything older is gone from the API.
 /// </summary>
 public sealed class RecentScoresJob(
     OsuApiClient api,
@@ -27,7 +30,7 @@ public sealed class RecentScoresJob(
 
     public async Task RunAsync(CancellationToken ct)
     {
-        await MarkAsync(SyncJobState.Running, null, ct);
+        await MarkAsync(SyncJobState.Running, null);
 
         var seen = 0; var newPasses = 0; var upgraded = 0; var rejected = 0; var skipped = 0;
 
@@ -35,8 +38,12 @@ public sealed class RecentScoresJob(
         {
             foreach (var (mode, slug) in Modes)
             {
+                // Passes only. However it is paged, the endpoint returns at most the newest
+                // 100 plays (osu-web caps offset + limit at 100), and with include_fails=1
+                // failed plays took their share of those — rows this job then threw away,
+                // while the passes they pushed out of the window were lost for good.
                 using var doc = await api.GetAsync(
-                    $"/users/{api.UserId}/scores/recent?mode={slug}&limit=100&include_fails=1", ct);
+                    $"/users/{api.UserId}/scores/recent?mode={slug}&limit=100", ct);
                 if (doc is null) continue;
 
                 var root = doc.RootElement;
@@ -56,15 +63,21 @@ public sealed class RecentScoresJob(
                 }
             }
 
-            await MarkAsync(SyncJobState.Completed, null, ct);
+            await MarkAsync(SyncJobState.Completed, null);
             log.LogInformation(
                 "Recent scores: {Seen} seen · {New} new passes · {Upgraded} updated · {Rejected} pre-rank · {Skipped} skipped",
                 seen, newPasses, upgraded, rejected, skipped);
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // Nothing to resume: the next poll re-reads the same 24-hour window.
+            await MarkAsync(SyncJobState.Paused, null);
+            log.LogWarning("Recent scores poll cancelled — the next poll covers the same window");
+        }
         catch (Exception ex)
         {
             log.LogError(ex, "Recent scores poll failed");
-            await MarkAsync(SyncJobState.Failed, SyncError.Describe(ex), ct);
+            await MarkAsync(SyncJobState.Failed, SyncError.Describe(ex));
             throw;
         }
     }
@@ -73,8 +86,12 @@ public sealed class RecentScoresJob(
 
     private async Task<Ingest> IngestAsync(JsonElement e, GameMode requestedMode, CancellationToken ct)
     {
-        // A failed run is not a pass. include_fails=1 is on so we can count the play,
-        // but only a completed run may produce a Score row.
+        // TryGetProperty throws on anything but an object, so without this one malformed
+        // element failed the poll for every score after it.
+        if (e.ValueKind != JsonValueKind.Object) return Ingest.Skipped;
+
+        // A failed run is not a pass. Only passes are asked for, but the flag is checked
+        // when present rather than assumed.
         if (e.TryGetProperty("passed", out var passed) && passed.ValueKind == JsonValueKind.False)
             return Ingest.Skipped;
 
@@ -115,23 +132,20 @@ public sealed class RecentScoresJob(
 
         var existing = await db.Scores.FindAsync([beatmapId.Value], ct);
         var accuracy = Dbl(e, "accuracy") ?? 0;
+        var modList = mods.Count == 0 ? null : string.Join(",", mods);
 
         if (existing is null)
         {
-            db.Scores.Add(new Score
+            var row = new Score
             {
                 BeatmapId = beatmapId.Value,
-                ScoreId = GetLong(e, "id") ?? 0,
                 PlayedAt = playedAt,
                 PlayedAtUnix = playedAt.ToUnixTimeSeconds(),
                 FetchedAt = DateTimeOffset.UtcNow,
-                CountsAsPass = true,
-                Grade = Str(e, "rank"),
-                Accuracy = accuracy,
-                MaxCombo = GetInt(e, "max_combo"),
-                Mods = mods.Count == 0 ? null : string.Join(",", mods),
-                IsLazer = e.TryGetProperty("build_id", out var b) && b.ValueKind == JsonValueKind.Number
-            });
+                CountsAsPass = true
+            };
+            Show(row, e, accuracy, modList);
+            db.Scores.Add(row);
             await db.SaveChangesAsync(ct);
             return Ingest.NewPass;
         }
@@ -139,35 +153,54 @@ public sealed class RecentScoresJob(
         // Already have a row. Promote a pre-rank-only row to a real pass, or refresh the
         // display fields if this run was better — neither changes the count under Rule 4,
         // but the row should show your best work.
+        //
+        // The date is a different matter: PlayedAt is when the map was first passed, and
+        // it is what "passed in the last 30 days" counts. A better run of an old pass used
+        // to re-date it to today, so replaying for accuracy inflated the pace projection.
+        // Only a promotion (the pre-rank date never qualified) or an earlier run moves it.
         var wasNotCounted = !existing.CountsAsPass;
-        if (wasNotCounted || accuracy > existing.Accuracy)
+        var better = accuracy > existing.Accuracy;
+        var earlier = wasNotCounted || playedAt < existing.PlayedAt;
+        if (!wasNotCounted && !better && !earlier) return Ingest.Skipped;
+
+        if (earlier)
         {
-            existing.CountsAsPass = true;
-            existing.ScoreId = GetLong(e, "id") ?? existing.ScoreId;
             existing.PlayedAt = playedAt;
             existing.PlayedAtUnix = playedAt.ToUnixTimeSeconds();
-            existing.FetchedAt = DateTimeOffset.UtcNow;
-            existing.Grade = Str(e, "rank");
-            existing.Accuracy = accuracy;
-            existing.MaxCombo = GetInt(e, "max_combo");
-            existing.Mods = mods.Count == 0 ? null : string.Join(",", mods);
-            await db.SaveChangesAsync(ct);
-            return wasNotCounted ? Ingest.NewPass : Ingest.Upgraded;
         }
-
-        return Ingest.Skipped;
+        if (wasNotCounted || better) Show(existing, e, accuracy, modList);
+        existing.CountsAsPass = true;
+        existing.FetchedAt = DateTimeOffset.UtcNow;
+        await db.SaveChangesAsync(ct);
+        return wasNotCounted ? Ingest.NewPass : Ingest.Upgraded;
     }
 
-    private async Task MarkAsync(SyncJobState state, string? error, CancellationToken ct)
+    /// <summary>
+    /// Every display field from one run, set together. Each write site used to copy them
+    /// out by hand, and the upgrade path missed IsLazer — so an upgraded row could show a
+    /// lazer score's grade and mods flagged as a stable one.
+    /// </summary>
+    private static void Show(Score row, JsonElement e, double accuracy, string? mods)
     {
-        await using var db = await dbFactory.CreateDbContextAsync(ct);
-        var j = await db.SyncJobs.FindAsync([JobName], ct);
+        row.ScoreId = GetLong(e, "id") ?? row.ScoreId;
+        row.Grade = Str(e, "rank");
+        row.Accuracy = accuracy;
+        row.MaxCombo = GetInt(e, "max_combo");
+        row.Mods = mods;
+        row.IsLazer = e.TryGetProperty("build_id", out var b) && b.ValueKind == JsonValueKind.Number;
+    }
+
+    /// <summary>Not cancellable, for the same reason as CatalogSyncJob's: it is what records a cancel.</summary>
+    private async Task MarkAsync(SyncJobState state, string? error)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync();
+        var j = await db.SyncJobs.FindAsync([JobName]);
         if (j is null) { j = new SyncJob { Name = JobName }; db.SyncJobs.Add(j); }
         j.State = state;
         j.Error = error;
         j.LastRunAt = DateTimeOffset.UtcNow;
         if (state == SyncJobState.Completed) j.LastSuccessAt = DateTimeOffset.UtcNow;
-        await db.SaveChangesAsync(ct);
+        await db.SaveChangesAsync();
     }
 
     private static string? Str(JsonElement e, string p) =>

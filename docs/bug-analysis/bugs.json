@@ -1,0 +1,955 @@
+{
+  "repository": "ZeroPyrozen/osuPersonalTracker",
+  "branch": "claude/repo-bug-analysis-fixes-mbzyx7",
+  "base_commit": "613e19d",
+  "generated": "2026-10-18",
+  "summary": {
+    "verified_bugs": 27,
+    "by_severity": {
+      "Critical": 1,
+      "High": 4,
+      "Medium": 7,
+      "Low": 15
+    },
+    "fixed": 27,
+    "found_in_first_pass": 23,
+    "promoted_from_observations": 4,
+    "observations_total": 18,
+    "observations_not_fixed": 15,
+    "tests_added": {
+      "methods": 91,
+      "cases": 123
+    }
+  },
+  "bugs": [
+    {
+      "id": "BUG-001",
+      "severity": "Critical",
+      "category": "Security / Availability (DoS)",
+      "component": "Browse search",
+      "title": "One anonymous GET with ~2,000 search words crashes the whole server",
+      "files_pre_fix": [
+        "src/OsuTracker.Web/Services/BrowseSearch.cs:46",
+        "src/OsuTracker.Web/Services/BrowseQueryService.cs:97"
+      ],
+      "description": {
+        "current": "Every search term becomes another nested Where(); EF Core translates the nesting recursively. /browse?q=a+a+a+... with ~2,000 words (a 4-5 KB URL, inside Kestrel's 8 KB request line) overflows the stack during prerender and the process aborts (exit 134); ~1,000 words already fail with SQLite's 'Expression tree is too large (maximum depth 1000)'.",
+        "expected": "An oversized search is truncated and answered; no input can take the process down."
+      },
+      "root_cause": "Unbounded public input (term count and length) fed into a recursively-translated expression tree.",
+      "impact": "Any anonymous visitor (the app is public behind Tailscale Funnel) can kill the server with one request, repeatedly.",
+      "reproduction": "curl \"http://host/browse?q=$(python3 -c \"print('+'.join(['a']*2500))\")\" -> connection dropped; server log ends in 'Stack overflow.'; every later request is refused.",
+      "fix": "BrowseSearch.Parse keeps at most MaxTerms = 16 tokens and MaxLength = 256 characters (never splitting a surrogate pair); the search box carries maxlength.",
+      "verification": {
+        "tests": [
+          "BrowseSearchTests.A_flood_of_words_is_cut_to_a_bounded_number_of_terms",
+          "BrowseSearchTests.The_bound_counts_filters_as_well_as_words",
+          "BrowseSearchTests.An_oversized_search_is_truncated_before_it_becomes_a_pattern",
+          "BrowseQueryServiceTests.A_search_past_sqlites_expression_depth_still_answers",
+          "BrowseQueryServiceTests.Thousands_of_terms_on_a_request_thread_do_not_take_the_process_down"
+        ]
+      },
+      "status": "Fixed",
+      "commits": [
+        "445b3a6"
+      ]
+    },
+    {
+      "id": "BUG-002",
+      "severity": "High",
+      "category": "Security / Input validation",
+      "component": "Browse search",
+      "title": "stars>nan, bpm=infinity, ar<1e999 fail the page with a SQL error",
+      "files_pre_fix": [
+        "src/OsuTracker.Web/Services/BrowseSearch.cs:135",
+        "src/OsuTracker.Web/Services/BrowseQueryService.cs:186"
+      ],
+      "description": {
+        "current": "double.TryParse accepts NaN/Infinity (and 1e999 overflows to Infinity); the value is inlined into SQL as a literal via Expression.Constant, and SQLite reads 'NaN'/'Infinity' as column names: 'no such column: NaN'.",
+        "expected": "A value that is not a finite number is searched for as text, as the parser's 'parsing is total' contract promises."
+      },
+      "root_cause": "Numeric parsing accepted non-finite values that have no SQL literal form.",
+      "impact": "HTTP 500 on prerender, a dead circuit interactively, and a shareable link that breaks the page for whoever opens it.",
+      "reproduction": "GET /browse?q=stars%3Enan -> 500 with SqliteException in the log.",
+      "fix": "ParseNumber and ParseLength return a value only when double.IsFinite.",
+      "verification": {
+        "tests": [
+          "BrowseSearchTests.Non_finite_numbers_are_searched_as_text",
+          "BrowseQueryServiceTests.Non_finite_numbers_answer_instead_of_failing_the_page"
+        ]
+      },
+      "status": "Fixed",
+      "commits": [
+        "445b3a6"
+      ]
+    },
+    {
+      "id": "BUG-003",
+      "severity": "High",
+      "category": "Functional / Error recovery",
+      "component": "osu! API token provider",
+      "title": "After any 401 the token provider throws forever; 401 recovery can never succeed",
+      "files_pre_fix": [
+        "src/OsuTracker.Web/OsuApi/OsuTokenProvider.cs:22",
+        "src/OsuTracker.Web/OsuApi/OsuTokenProvider.cs:28",
+        "src/OsuTracker.Web/OsuApi/OsuTokenProvider.cs:57"
+      ],
+      "description": {
+        "current": "Freshness was tested as now < _expiresAt.AddMinutes(-1). Invalidate() sets _expiresAt = DateTimeOffset.MinValue, and MinValue minus a minute is unrepresentable, so every GetTokenAsync after the first 401 throws ArgumentOutOfRangeException.",
+        "expected": "Invalidate() forces one fresh token request and the original call succeeds."
+      },
+      "root_cause": "Date arithmetic on a sentinel value (MinValue) that has no room below it.",
+      "impact": "The 401 path in OsuApiClient is dead code; during a backfill every remaining map fails instantly, the per-map catch skips them all at rate-limit speed, and the job still reports Completed.",
+      "reproduction": "GetTokenAsync(); Invalidate(); GetTokenAsync() -> ArgumentOutOfRangeException.",
+      "fix": "Compare DateTimeOffset.UtcNow.AddMinutes(1) < _expiresAt (the minute goes on 'now').",
+      "verification": {
+        "tests": [
+          "OsuTokenProviderTests.A_token_can_be_fetched_again_after_it_is_invalidated",
+          "OsuTokenProviderTests.A_401_mid_sweep_is_recovered_with_a_fresh_token"
+        ]
+      },
+      "status": "Fixed",
+      "commits": [
+        "4b6cdf4"
+      ]
+    },
+    {
+      "id": "BUG-004",
+      "severity": "High",
+      "category": "Data integrity",
+      "component": "Catalogue sync",
+      "title": "--max-pages reconciles a partial sweep, marking most of the catalogue Departed",
+      "files_pre_fix": [
+        "src/OsuTracker.Web/Sync/CatalogSyncJob.cs:117",
+        "src/OsuTracker.Web/Sync/CatalogSyncJob.cs:132"
+      ],
+      "description": {
+        "current": "Stopping early broke out of the sweep and fell through to ReconcileAsync, which marks every counted map not seen this run as Departed, then marked the job Completed and cleared the cursor.",
+        "expected": "A run stopped early is a partial run: it pauses with its cursor kept and does not reconcile."
+      },
+      "root_cause": "The 'only reconcile after a finished sweep' rule was enforced for cancellation but not for --max-pages.",
+      "impact": "One test run on a populated database silently removes most maps from every denominator (recoverable by a full sync catalog).",
+      "reproduction": "Seed a catalogue, run 'sync catalog --max-pages 1' -> every set beyond page 1 has Status = Departed, job Completed.",
+      "fix": "--max-pages now sets stoppedEarly; the job is marked Paused with its cursor and returns before reconciling; --resume continues.",
+      "verification": {
+        "tests": [
+          "CatalogSyncJobTests.Stopping_early_with_max_pages_leaves_the_rest_of_the_catalogue_counted",
+          "CatalogSyncJobTests.A_sweep_stopped_by_max_pages_resumes_where_it_stopped_and_then_completes"
+        ]
+      },
+      "status": "Fixed",
+      "commits": [
+        "0ff2429"
+      ]
+    },
+    {
+      "id": "BUG-005",
+      "severity": "Medium",
+      "category": "State management / Cancellation",
+      "component": "All four sync jobs + CLI",
+      "title": "Ctrl+C leaves jobs 'Running' forever; Paused is never recorded",
+      "files_pre_fix": [
+        "src/OsuTracker.Web/Sync/CatalogSyncJob.cs:125",
+        "src/OsuTracker.Web/Sync/CatalogSyncJob.cs:141",
+        "src/OsuTracker.Web/Sync/PlayCountSyncJob.cs:106",
+        "src/OsuTracker.Web/Sync/ScoreBackfillJob.cs:130",
+        "src/OsuTracker.Web/Sync/RecentScoresJob.cs:67"
+      ],
+      "description": {
+        "current": "Every job wrote its final state with the run's own CancellationToken. After Ctrl+C that token is cancelled, so the bookkeeping write threw before saving (and replaced the original exception); the CLI then died with an unhandled OperationCanceledException.",
+        "expected": "A cancelled job is recorded as Paused (cursor kept) and the CLI exits cleanly."
+      },
+      "root_cause": "Cleanup/bookkeeping code honoured the token whose cancellation it existed to record.",
+      "impact": "The nav badge says 'syncing' on every page until that job runs again; /sync shows a Running job that is not running.",
+      "reproduction": "Cancel a sync while a request is in flight -> SyncJobs.State stays Running (TaskCanceledException from RelationalConnection.OpenInternalAsync).",
+      "fix": "MarkAsync no longer takes a token; each job catches OperationCanceledException on its own token and records Paused; the CLI returns exit code 130 with a one-line message.",
+      "verification": {
+        "tests": [
+          "CatalogSyncJobTests.Cancelling_mid_request_leaves_the_job_paused_with_its_cursor",
+          "PlayCountSyncJobTests.Cancelling_mid_request_leaves_the_job_paused_at_its_offset",
+          "ScoreBackfillJobTests.Cancelling_mid_request_leaves_the_job_paused",
+          "RecentScoresJobTests.Cancelling_mid_request_leaves_the_job_paused_rather_than_running",
+          "SyncCommandsTests.Ctrl_c_exits_130_with_the_job_paused_rather_than_a_stack_trace"
+        ]
+      },
+      "status": "Fixed",
+      "commits": [
+        "0ff2429",
+        "d3c2816"
+      ]
+    },
+    {
+      "id": "BUG-006",
+      "severity": "Medium",
+      "category": "Functional / Logic error",
+      "component": "Progress ladder, star bands, badge, Browse chips",
+      "title": "Attempted/Untouched miscounted; status chips disagree with their own lists",
+      "files_pre_fix": [
+        "src/OsuTracker.Web/Services/ProgressQueryService.cs:72",
+        "src/OsuTracker.Web/Services/ProgressQueryService.cs:119",
+        "src/OsuTracker.Web/Services/BrowseQueryService.cs:222"
+      ],
+      "description": {
+        "current": "Attempted was computed as played - passed, assuming every pass has a playcount row. A pass that `sync recent` records on a never-loaded map has none until the next `sync playcounts` (which the README says you no longer need), so each such pass moved a map from Attempted to Untouched.",
+        "expected": "Attempted = played and not passed, counted directly, identical to Browse's per-row filter."
+      },
+      "root_cause": "A derived count computed by subtracting sets from two independent sources that are not subsets of each other.",
+      "impact": "Dashboard, mode pages, star bands, badge and Browse chips drift further from the truth every day; the Untouched chip could say 2 and open a list of 1. On a synthetic 215k-map catalogue, 29 catch maps were misplaced.",
+      "reproduction": "Seed a pass on a map without a PlayCount row -> ladder (total 5, passed 2, attempted 1, untouched 2); truth is (5, 2, 2, 1).",
+      "fix": "ProgressQueryService.Attempted() defines the rung once (a playcount join + NOT EXISTS counting score, correlated on the playcount so SQLite probes only played maps); ladder, bands and chips all use it. Benchmarked at parity with the old query.",
+      "verification": {
+        "tests": [
+          "ProgressQueryServiceTests.The_ladder_counts_a_pass_without_a_playcount_as_passed_and_nothing_else",
+          "ProgressQueryServiceTests.Star_bands_split_the_same_way_as_the_ladder",
+          "BrowseQueryServiceTests.Each_status_chip_counts_exactly_the_rows_its_filter_shows",
+          "BrowseQueryServiceTests.The_chips_agree_with_the_ladder"
+        ]
+      },
+      "status": "Fixed",
+      "commits": [
+        "d93b7b3",
+        "4a601a1"
+      ]
+    },
+    {
+      "id": "BUG-007",
+      "severity": "Medium",
+      "category": "Integration / Data loss",
+      "component": "Recent-scores poll",
+      "title": "include_fails=1 lets discarded fails push passes out of the API's 100-row window",
+      "files_pre_fix": [
+        "src/OsuTracker.Web/Sync/RecentScoresJob.cs:39"
+      ],
+      "description": {
+        "current": "osu-web returns at most the newest 100 rows of /users/{id}/scores/recent however it is paged (UsersController MAX_RESULTS = 100). With include_fails=1, failed plays filled that window and were then thrown away by the job.",
+        "expected": "The window is spent on passes, the only plays the job records."
+      },
+      "root_cause": "A request flag whose stated purpose ('so we can count the play') was never implemented, against a hard server-side cap.",
+      "impact": "Passes are lost permanently: backfill never revisits a map and this poll is the only way a new pass is recorded. One practice session of 100 fails hides every pass before it.",
+      "reproduction": "A fake honouring osu-web's semantics: 150 fails in the last hour, 1 pass three hours ago -> the pass is never recorded.",
+      "fix": "Poll passes only (include_fails dropped); the 'passed' flag is still checked defensively; README documents the 100-pass window.",
+      "verification": {
+        "tests": [
+          "RecentScoresJobTests.A_pass_behind_a_hundred_newer_fails_is_still_recorded"
+        ]
+      },
+      "status": "Fixed",
+      "commits": [
+        "ba1775f"
+      ]
+    },
+    {
+      "id": "BUG-008",
+      "severity": "Medium",
+      "category": "Functional / Metrics",
+      "component": "Recent-scores poll, score backfill, pace projection",
+      "title": "Pace and '+N in 30d' inflated by accuracy re-plays of old passes",
+      "files_pre_fix": [
+        "src/OsuTracker.Web/Sync/RecentScoresJob.cs:147",
+        "src/OsuTracker.Web/Sync/ScoreBackfillJob.cs:201"
+      ],
+      "description": {
+        "current": "PlayedAtUnix drives GetRecentPassCountAsync. The recent poll re-dated a counted pass to today whenever a better run came in, and backfill dated each map by its best-accuracy score rather than its first qualifying pass.",
+        "expected": "A pass is dated when the map was first cleared; better runs change only what the row shows."
+      },
+      "root_cause": "One field used both as display ('the score on show') and as a metric input ('when it was passed').",
+      "impact": "The projected finish date and the badge's '+N in 30d' count maps passed months or years ago.",
+      "reproduction": "Counted pass dated 200 days ago; recent poll sees a better run now -> PlayedAtUnix moves to now; recent-pass count 0 -> 1.",
+      "fix": "Backfill dates the row by the earliest qualifying pass; the poll moves the date only on promotion from pre-rank or for an earlier run.",
+      "verification": {
+        "tests": [
+          "RecentScoresJobTests.Improving_an_old_pass_updates_what_it_shows_but_not_when_it_was_passed",
+          "RecentScoresJobTests.Promoting_a_pre_rank_row_dates_it_by_the_qualifying_pass",
+          "RecentScoresJobTests.Two_passes_of_a_new_map_in_one_window_date_it_by_the_earlier",
+          "ScoreBackfillJobTests.A_map_first_passed_long_ago_is_not_a_recent_pass_however_recently_it_was_bettered",
+          "ScoreBackfillJobTests.Only_passes_after_the_ranking_qualify_and_the_first_of_them_dates_the_row"
+        ]
+      },
+      "status": "Fixed",
+      "commits": [
+        "ba1775f"
+      ]
+    },
+    {
+      "id": "BUG-009",
+      "severity": "Low",
+      "category": "Data consistency",
+      "component": "Recent-scores poll",
+      "title": "An upgraded row keeps the old IsLazer flag",
+      "files_pre_fix": [
+        "src/OsuTracker.Web/Sync/RecentScoresJob.cs:143-155"
+      ],
+      "description": {
+        "current": "The three places that copied display fields out of a score had drifted; the upgrade path never set IsLazer.",
+        "expected": "Every display field on a row comes from the same run."
+      },
+      "root_cause": "Duplicated field-by-field copy blocks.",
+      "impact": "A row can show a lazer score's grade and mods flagged as a stable score.",
+      "reproduction": "Stable pass on record; better lazer run (build_id present) arrives -> IsLazer stays false.",
+      "fix": "One Show() helper sets every display field; insert, promotion and upgrade all use it.",
+      "verification": {
+        "tests": [
+          "RecentScoresJobTests.An_upgrade_carries_every_display_field_including_the_client"
+        ]
+      },
+      "status": "Fixed",
+      "commits": [
+        "ba1775f"
+      ]
+    },
+    {
+      "id": "BUG-010",
+      "severity": "Medium",
+      "category": "Error handling / Resilience",
+      "component": "Score backfill",
+      "title": "Systemic failures are skipped map by map and the job reports Completed",
+      "files_pre_fix": [
+        "src/OsuTracker.Web/Sync/ScoreBackfillJob.cs:70"
+      ],
+      "description": {
+        "current": "Every per-map exception was caught and skipped and the cursor advanced, so revoked credentials, an outage or BUG-003 burned the entire queue at rate-limit speed and ended 'Completed'.",
+        "expected": "Isolated failures are skipped; a streak of failures stops the run so --resume retries it."
+      },
+      "root_cause": "Skip-and-continue error handling with no circuit breaker; cursor advanced on failures.",
+      "impact": "A multi-hour backfill silently produces nothing, with a green status.",
+      "reproduction": "Token endpoint returns 401 -> all 40 queued maps attempted, job Completed.",
+      "fix": "MaxConsecutiveErrors = 10 fails the run; only an answered map advances the cursor.",
+      "verification": {
+        "tests": [
+          "ScoreBackfillJobTests.A_run_of_failures_stops_the_backfill_instead_of_skipping_the_whole_queue",
+          "ScoreBackfillJobTests.After_a_run_of_failures_resume_retries_the_maps_that_failed",
+          "ScoreBackfillJobTests.An_isolated_failure_is_skipped_and_the_run_still_completes"
+        ]
+      },
+      "status": "Fixed",
+      "commits": [
+        "0ff2429"
+      ]
+    },
+    {
+      "id": "BUG-011",
+      "severity": "Low",
+      "category": "Integration / Retry policy",
+      "component": "osu! API client",
+      "title": "Client errors (400/403/422) retried five times with ~30 s of backoff",
+      "files_pre_fix": [
+        "src/OsuTracker.Web/OsuApi/OsuApiClient.cs:63",
+        "src/OsuTracker.Web/OsuApi/OsuApiClient.cs:90"
+      ],
+      "description": {
+        "current": "EnsureSuccessStatusCode throws HttpRequestException for any status and IsTransient treated every HttpRequestException as transient.",
+        "expected": "A status code that arrived is an answer unless it is 5xx or 408; transport failures are still retried."
+      },
+      "root_cause": "Transient classification by exception type alone.",
+      "impact": "Each permanent failure costs five rate-limit tokens and 2+4+8+16 s before failing anyway.",
+      "reproduction": "403 from the API -> 5 attempts over ~30 s.",
+      "fix": "HttpRequestException { StatusCode: { } code } is transient only for >= 500 or 408.",
+      "verification": {
+        "tests": [
+          "OsuApiClientTests.A_client_error_fails_at_once_instead_of_being_retried",
+          "OsuApiClientTests.A_server_error_is_still_retried",
+          "OsuApiClientTests.A_dropped_connection_is_still_retried"
+        ]
+      },
+      "status": "Fixed",
+      "commits": [
+        "4b6cdf4"
+      ]
+    },
+    {
+      "id": "BUG-012",
+      "severity": "Low",
+      "category": "HTTP caching",
+      "component": "Badge endpoints",
+      "title": "Strong ETag (and PNG cache key) ignore the drawn UPDATED date",
+      "files_pre_fix": [
+        "src/OsuTracker.Web/Services/BadgeService.cs:31",
+        "src/OsuTracker.Web/Badges/BadgeEndpoints.cs:157"
+      ],
+      "description": {
+        "current": "The banner prints 'UPDATED yyyy-MM-dd' but the fingerprint behind the strong ETag held only the numbers, so one ETag stood for a different SVG each day; the PNG raster cache is keyed on that ETag.",
+        "expected": "Different bytes, different strong ETag; the cache still holds all day."
+      },
+      "root_cause": "The fingerprint did not include everything the renderer draws.",
+      "impact": "304s preserve a stale date, and the PNG kept the first day's date indefinitely while the SVG moved on.",
+      "reproduction": "Same stats, consecutive days -> two different SVGs, identical ETag \"1b8127a85fea2de2fa57\".",
+      "fix": "BadgeSnapshot.UpdatedOn is part of Fingerprint and is what the renderer prints.",
+      "verification": {
+        "tests": [
+          "BadgeTests.The_etag_changes_with_the_date_the_banner_draws",
+          "BadgeTests.The_etag_holds_through_the_day_so_an_unchanged_badge_stays_cached"
+        ]
+      },
+      "status": "Fixed",
+      "commits": [
+        "0a0bbf8"
+      ]
+    },
+    {
+      "id": "BUG-013",
+      "severity": "Low",
+      "category": "Internationalisation",
+      "component": "Badge renderer, Browse table",
+      "title": "Dates formatted in the server culture's calendar (th-TH prints 2569)",
+      "files_pre_fix": [
+        "src/OsuTracker.Web/Badges/BadgeRenderer.cs:45",
+        "src/OsuTracker.Web/Components/Pages/Browse.razor:158"
+      ],
+      "description": {
+        "current": "'yyyy' in a culture-sensitive format counts years in that culture's calendar: th-TH 2569, ar-SA 1448, fa-IR 1405.",
+        "expected": "Gregorian, invariant dates, as the app's numbers already were."
+      },
+      "root_cause": "Interpolated/ToString date formatting without an IFormatProvider.",
+      "impact": "A public badge and the Ranked column show the wrong year on hosts with those locales.",
+      "reproduction": "CultureInfo.CurrentCulture = th-TH; render the banner -> 'UPDATED 2569-10-18'.",
+      "fix": "Both sites format with CultureInfo.InvariantCulture (BadgeSnapshot.UpdatedOn).",
+      "verification": {
+        "tests": [
+          "BadgeTests.The_banner_is_the_same_document_whatever_culture_the_server_runs_in"
+        ]
+      },
+      "status": "Fixed",
+      "commits": [
+        "0a0bbf8"
+      ]
+    },
+    {
+      "id": "BUG-014",
+      "severity": "Medium",
+      "category": "Configuration validation",
+      "component": "Sync CLI",
+      "title": "A missing UserId makes every sync 'complete' having fetched nothing",
+      "files_pre_fix": [
+        "src/OsuTracker.Web/Sync/SyncCommands.cs:41"
+      ],
+      "description": {
+        "current": "Settings without the OsuApi: prefix never bind and an unbound UserId is 0; /users/0/... returns 404, which the jobs read as 'nothing there' and record as Completed.",
+        "expected": "API commands refuse to start without credentials (and, where needed, a user id), with a pointer to the README."
+      },
+      "root_cause": "No validation of required options before running jobs that depend on them.",
+      "impact": "On a timer this looks exactly like a working sync while recording nothing.",
+      "reproduction": "sync recent with OsuApi:UserId unset -> exit 0, RecentScores job Completed, no scores.",
+      "fix": "ConfigProblem() checks ClientId/ClientSecret (all API commands) and UserId (playcounts/scores/recent); exit 2 with a message.",
+      "verification": {
+        "tests": [
+          "SyncCommandsTests.A_missing_user_id_stops_user_commands_before_any_request",
+          "SyncCommandsTests.Missing_credentials_stop_the_catalogue_too",
+          "SyncCommandsTests.Status_reads_the_database_without_needing_credentials"
+        ]
+      },
+      "status": "Fixed",
+      "commits": [
+        "d3c2816"
+      ]
+    },
+    {
+      "id": "BUG-015",
+      "severity": "Medium",
+      "category": "Input validation / CLI",
+      "component": "Sync CLI",
+      "title": "Unreadable --mode/--limit/--max-pages silently ignored (--mode ctb backfills every mode)",
+      "files_pre_fix": [
+        "src/OsuTracker.Web/Sync/SyncCommands.cs:21",
+        "src/OsuTracker.Web/Sync/SyncCommands.cs:36"
+      ],
+      "description": {
+        "current": "A flag value that did not parse was dropped, so 'sync scores --mode ctb' (an alias the badge URLs accept) or '--limit ten' started an unbounded multi-hour backfill of every mode.",
+        "expected": "A flag that is present must carry a valid value, or the command exits 2 before fetching anything."
+      },
+      "root_cause": "TryParse failures defaulted to 'no limit' instead of being reported.",
+      "impact": "Hours of unintended API traffic and rate-limit budget.",
+      "reproduction": "sync scores --mode ctb -> full backfill of all modes, exit 0.",
+      "fix": "TryFlag<T>() reports unreadable or missing values; counts must be positive integers.",
+      "verification": {
+        "tests": [
+          "SyncCommandsTests.An_unreadable_flag_is_an_error_rather_than_a_default",
+          "SyncCommandsTests.A_flag_with_no_value_is_an_error",
+          "SyncCommandsTests.A_recognised_mode_alias_is_accepted"
+        ]
+      },
+      "status": "Fixed",
+      "commits": [
+        "d3c2816"
+      ]
+    },
+    {
+      "id": "BUG-016",
+      "severity": "Low",
+      "category": "State management",
+      "component": "Catalogue sync",
+      "title": "--resume on a completed sweep double-counts ItemsDone",
+      "files_pre_fix": [
+        "src/OsuTracker.Web/Sync/CatalogSyncJob.cs:56"
+      ],
+      "description": {
+        "current": "--resume on a Completed job ran a fresh sweep but skipped the ItemsDone reset.",
+        "expected": "Nothing to resume means a fresh run with a fresh count."
+      },
+      "root_cause": "'resume requested' and 'something to resume' were conflated.",
+      "impact": "Progress shown on /sync and in the CLI doubles.",
+      "reproduction": "Complete a 5-set sweep, run again with --resume -> ItemsDone 10.",
+      "fix": "resuming = resume && job.State != Completed drives the watermark, cursor and reset.",
+      "verification": {
+        "tests": [
+          "CatalogSyncJobTests.Resuming_a_sweep_that_already_completed_counts_from_zero"
+        ]
+      },
+      "status": "Fixed",
+      "commits": [
+        "0ff2429"
+      ]
+    },
+    {
+      "id": "BUG-017",
+      "severity": "Low",
+      "category": "Edge case / Integer overflow",
+      "component": "Browse paging",
+      "title": "page >= 42,949,673 wraps negative and serves page one",
+      "files_pre_fix": [
+        "src/OsuTracker.Web/Services/BrowseQueryService.cs:155",
+        "src/OsuTracker.Web/Components/Pages/Browse.razor:235"
+      ],
+      "description": {
+        "current": "page * PageSize overflowed int, SQLite treats a negative OFFSET as 0, so page one was served under the bogus page number and the past-the-end redirect never fired; page=-2147483648 also wrapped in the page itself.",
+        "expected": "A page past the end returns no rows and the UI redirects to the last real page."
+      },
+      "root_cause": "Unchecked multiplication of an attacker-controlled int.",
+      "impact": "Wrong results and garbage row numbering for hand-edited URLs.",
+      "reproduction": "QueryAsync(Page = 50,000,000) -> rows of page one.",
+      "fix": "Page clamped to int.MaxValue / PageSize before the multiply; Browse tests the sign before subtracting.",
+      "verification": {
+        "tests": [
+          "BrowseQueryServiceTests.A_page_far_past_the_end_returns_no_rows_rather_than_wrapping_to_the_first"
+        ]
+      },
+      "status": "Fixed",
+      "commits": [
+        "445b3a6"
+      ]
+    },
+    {
+      "id": "BUG-018",
+      "severity": "Low",
+      "category": "Input validation",
+      "component": "Browse search",
+      "title": "ranked=2019-13 silently means all of 2019",
+      "files_pre_fix": [
+        "src/OsuTracker.Web/Services/BrowseSearch.cs:160-161"
+      ],
+      "description": {
+        "current": "An invalid month or day part was dropped, widening the filter instead of failing it.",
+        "expected": "A value that names no year, month or day stays text, so the parsed summary exposes the typo."
+      },
+      "root_cause": "Each date part parsed independently with a silent fallback.",
+      "impact": "Typos produce plausible-looking but wrong result sets.",
+      "reproduction": "Parse('ranked=2019-13') -> a filter for the whole of 2019.",
+      "fix": "At most three parts, each must parse and be in range.",
+      "verification": {
+        "tests": [
+          "BrowseSearchTests.Malformed_dates_are_searched_as_text",
+          "BrowseSearchTests.A_month_becomes_its_half_open_range"
+        ]
+      },
+      "status": "Fixed",
+      "commits": [
+        "445b3a6"
+      ]
+    },
+    {
+      "id": "BUG-019",
+      "severity": "Low",
+      "category": "Integration / Rate limiting",
+      "component": "osu! API rate limiter",
+      "title": "PenaliseAsync does not drain the bucket as documented",
+      "files_pre_fix": [
+        "src/OsuTracker.Web/OsuApi/OsuRateLimiter.cs:35"
+      ],
+      "description": {
+        "current": "It only delayed the caller; the bucket kept its tokens through the pause, so the retry after a 429 went out at the head of a burst.",
+        "expected": "A 429 costs the rest of the window."
+      },
+      "root_cause": "Implementation did not match its own contract.",
+      "impact": "After a 429 the client can immediately burst again.",
+      "reproduction": "Limiter at 10/min; PenaliseAsync(0) -> 10 permits still available.",
+      "fix": "Acquire whatever the bucket holds, then wait.",
+      "verification": {
+        "tests": [
+          "OsuRateLimiterTests.Penalise_drains_the_bucket_so_the_retry_waits_for_the_next_window"
+        ]
+      },
+      "status": "Fixed",
+      "commits": [
+        "4b6cdf4"
+      ]
+    },
+    {
+      "id": "BUG-020",
+      "severity": "Low",
+      "category": "UI / Configuration",
+      "component": "Sync page",
+      "title": "Rate-limit panel hard-codes '/ 60'",
+      "files_pre_fix": [
+        "src/OsuTracker.Web/Components/Pages/SyncStatus.razor:22",
+        "src/OsuTracker.Web/Components/Pages/SyncStatus.razor:27"
+      ],
+      "description": {
+        "current": "The panel printed 'N / 60' and scaled its meter for 60 whatever OsuApi:RequestsPerMinute said.",
+        "expected": "The configured budget, clamped as the limiter clamps it."
+      },
+      "root_cause": "Magic number duplicated from configuration.",
+      "impact": "Misleading status for any non-default rate.",
+      "reproduction": "RequestsPerMinute = 120 -> '120 / 60 available'.",
+      "fix": "Budget reads IOptions<OsuApiOptions>.",
+      "verification": {
+        "tests": [
+          "PageTests.The_sync_page_budget_reads_the_configured_rate"
+        ]
+      },
+      "status": "Fixed",
+      "commits": [
+        "f06471d"
+      ]
+    },
+    {
+      "id": "BUG-021",
+      "severity": "Low",
+      "category": "Concurrency / UI state",
+      "component": "Browse and mode pages",
+      "title": "Overlapping loads let an older result overwrite a newer view",
+      "files_pre_fix": [
+        "src/OsuTracker.Web/Components/Pages/Browse.razor:248",
+        "src/OsuTracker.Web/Components/Pages/ModeDetail.razor:188",
+        "src/OsuTracker.Web/Components/Pages/ModeDetail.razor:212"
+      ],
+      "description": {
+        "current": "Results were assigned to fields as each await completed; two navigations in flight could finish in either order.",
+        "expected": "Only the newest load publishes; 'show more' appends only to the list it was pressed for."
+      },
+      "root_cause": "Async lifecycle methods publishing per-await without a staleness check.",
+      "impact": "Browse showed the previous filter's rows under the new chips; a mode page showed another mode's star bands; 'show more' appended the old mode's sets to the new mode's list.",
+      "reproduction": "bUnit with gated DB calls released in reverse order (see PageTests).",
+      "fix": "A load counter: results gathered in locals and published only if no newer load started.",
+      "verification": {
+        "tests": [
+          "PageTests.Browse_shows_the_newest_filter_even_when_an_older_query_finishes_last",
+          "PageTests.A_mode_page_shows_the_newest_mode_even_when_an_older_load_finishes_last",
+          "PageTests.Show_more_cannot_append_one_modes_sets_to_another_modes_list"
+        ]
+      },
+      "status": "Fixed",
+      "commits": [
+        "f06471d"
+      ]
+    },
+    {
+      "id": "BUG-022",
+      "severity": "High",
+      "category": "Data integrity",
+      "component": "Catalogue sync",
+      "title": "A 404 or malformed page is taken as the end of the catalogue and reconciled",
+      "files_pre_fix": [
+        "src/OsuTracker.Web/Sync/CatalogSyncJob.cs:85",
+        "src/OsuTracker.Web/Sync/CatalogSyncJob.cs:88"
+      ],
+      "description": {
+        "current": "doc is null (404), a page without a beatmapsets array, or (via a thrown InvalidOperationException) a non-object body ended the sweep, and the reconcile then marked everything not yet reached as Departed and the job Completed.",
+        "expected": "The sweep ends only at a null cursor or an empty page; anything else fails the run with its cursor kept."
+      },
+      "root_cause": "Anomalies treated as natural termination ahead of a destructive step.",
+      "impact": "A 404 or {} on page 2 of a 5-set catalogue departed 4 of the 5 maps; on page one (e.g. if the endpoint moved) it would empty every denominator.",
+      "reproduction": "Second search page returns 404 -> 4/5 maps Departed, job Completed.",
+      "fix": "404 throws HttpRequestException(404); wrong shape throws JsonException ('unexpected response shape from the osu! API').",
+      "verification": {
+        "tests": [
+          "CatalogSyncJobTests.A_page_that_is_not_a_page_fails_the_run_instead_of_ending_the_catalogue",
+          "CatalogSyncJobTests.An_empty_page_still_ends_the_sweep_normally"
+        ]
+      },
+      "status": "Fixed",
+      "commits": [
+        "3837077"
+      ]
+    },
+    {
+      "id": "BUG-023",
+      "severity": "Low",
+      "category": "Robustness / JSON handling",
+      "component": "Backfill, recent poll, playcount sync",
+      "title": "Shape guards throw instead of skipping (TryGetProperty on non-objects)",
+      "files_pre_fix": [
+        "src/OsuTracker.Web/Sync/ScoreBackfillJob.cs:227",
+        "src/OsuTracker.Web/Sync/RecentScoresJob.cs:78",
+        "src/OsuTracker.Web/Sync/PlayCountSyncJob.cs:68"
+      ],
+      "description": {
+        "current": "JsonElement.TryGetProperty throws on anything but an object: the backfill's bare-array branch was unreachable, and one non-object element failed a whole recent poll or playcount sync.",
+        "expected": "Unexpected elements are skipped; arrays are read as the code intends."
+      },
+      "root_cause": "Assuming TryGetProperty is total.",
+      "impact": "Single malformed elements abort whole runs.",
+      "reproduction": "Recent poll returns [42, {...pass...}] -> InvalidOperationException, poll Failed.",
+      "fix": "Check ValueKind == Object before every TryGetProperty.",
+      "verification": {
+        "tests": [
+          "ScoreBackfillJobTests.A_bare_array_of_scores_is_read_as_well_as_the_envelope",
+          "RecentScoresJobTests.An_element_that_is_not_a_score_is_skipped_rather_than_failing_the_poll",
+          "PlayCountSyncJobTests.A_row_that_is_not_an_object_is_skipped_rather_than_failing_the_sync"
+        ]
+      },
+      "status": "Fixed",
+      "commits": [
+        "3837077"
+      ]
+    },
+    {
+      "id": "BUG-024",
+      "severity": "Low",
+      "category": "Security / Rate limiting",
+      "component": "Rate limiters (badges, /_blazor/negotiate)",
+      "title": "IPv6 clients get a fresh rate-limit budget per address",
+      "files_pre_fix": [
+        "src/OsuTracker.Web/Program.cs:70",
+        "src/OsuTracker.Web/Program.cs:89"
+      ],
+      "description": {
+        "current": "Both partitioned limiters keyed on RemoteIpAddress.ToString(). An IPv6 client is normally assigned a whole /64, so it could send each request from a new address and never meet either limit.",
+        "expected": "One budget per IPv6 /64, just as everyone behind one IPv4 NAT already shares one."
+      },
+      "root_cause": "An IPv6 address treated as a client identity.",
+      "impact": "For any client reaching the app over IPv6, the badge limits (which bound PNG rasterising) and the negotiate cap (which bounds circuit creation) did not apply.",
+      "reproduction": "Keys for 2001:db8:1:2::1 and 2001:db8:1:2:ffff:ffff:ffff:fffe -> two different strings, so two budgets.",
+      "fix": "ClientAddress.PartitionKey: IPv4 (and v4-mapped IPv6) by address, IPv6 by its /64; both limiters use it.",
+      "verification": {
+        "tests": [
+          "ClientAddressTests.Every_address_in_one_ipv6_slash64_is_one_client",
+          "ClientAddressTests.A_v4_mapped_address_counts_as_the_ipv4_client_it_is",
+          "ClientAddressTests.Neighbouring_ipv6_networks_stay_apart",
+          "ClientAddressTests.Each_ipv4_address_is_its_own_client",
+          "ClientAddressTests.No_address_is_one_shared_unknown_client"
+        ]
+      },
+      "status": "Fixed",
+      "commits": [
+        "a627d3a"
+      ],
+      "promoted_from_observation": "OBS-08"
+    },
+    {
+      "id": "BUG-025",
+      "severity": "Low",
+      "category": "HTTP caching (RFC 9110)",
+      "component": "Badge endpoints",
+      "title": "If-None-Match compared verbatim: weak tags, lists and '*' never revalidate",
+      "files_pre_fix": [
+        "src/OsuTracker.Web/Badges/BadgeEndpoints.cs:149"
+      ],
+      "description": {
+        "current": "The raw header was compared with the ETag as one string. A tag weakened to W/\"...\" by a compressing proxy, a list of several tags, and \"*\" each missed, so the revalidation got the whole badge again.",
+        "expected": "If-None-Match as RFC 9110 section 13.1.2 defines it: \"*\" or a list of entity tags, compared weakly; a match is a 304."
+      },
+      "root_cause": "A hand-rolled string comparison in place of the framework's typed header parser.",
+      "impact": "Each such revalidation re-sent the full badge (up to ~450 KB for a download-scale PNG) instead of an empty 304. The image itself was always correct.",
+      "reproduction": "GET /badge.svg with If-None-Match: W/\"<etag>\" (or \"x\", \"<etag>\" or *) -> 200 with the full SVG.",
+      "fix": "IsNotModified reads GetTypedHeaders().IfNoneMatch and matches \"*\" or any tag by weak comparison; a malformed value falls through to a 200.",
+      "verification": {
+        "tests": [
+          "BadgeEndpointTests.A_tag_weakened_by_a_proxy_still_revalidates",
+          "BadgeEndpointTests.A_list_of_tags_revalidates_when_any_of_them_matches",
+          "BadgeEndpointTests.A_star_revalidates_any_current_badge",
+          "BadgeEndpointTests.An_unchanged_badge_revalidates_to_304",
+          "BadgeEndpointTests.A_stale_or_malformed_tag_gets_the_badge"
+        ]
+      },
+      "status": "Fixed",
+      "commits": [
+        "f00c7c1"
+      ],
+      "promoted_from_observation": "OBS-11"
+    },
+    {
+      "id": "BUG-026",
+      "severity": "Low",
+      "category": "Security hardening",
+      "component": "Badge endpoints",
+      "title": "Badge responses carry no Content-Security-Policy or nosniff",
+      "files_pre_fix": [
+        "src/OsuTracker.Web/Badges/BadgeEndpoints.cs:147"
+      ],
+      "description": {
+        "current": "Opened directly, the SVG is a document on the app's own origin, built from query-string options, and it was served without a CSP. Neither format carried X-Content-Type-Options.",
+        "expected": "The SVG can do nothing but draw its own markup (default-src 'none'), and neither format is content-sniffed."
+      },
+      "root_cause": "No response hardening on the one public document the app builds from request input.",
+      "impact": "No injection was found: mode, layout and theme parse to fixed values and the accent must be a known name or validated hex. So this is depth, not a hole; without it, one escaping slip in a later change would run script on the app's origin.",
+      "reproduction": "curl -I /badge.svg -> no Content-Security-Policy and no X-Content-Type-Options header.",
+      "fix": "Every badge response sets Content-Security-Policy: default-src 'none' and X-Content-Type-Options: nosniff. Headless Chromium renders both layouts under the policy with no violations.",
+      "verification": {
+        "tests": [
+          "BadgeEndpointTests.The_svg_can_run_nothing_even_when_opened_as_a_page",
+          "BadgeEndpointTests.The_png_is_not_sniffed_as_anything_else"
+        ]
+      },
+      "status": "Fixed",
+      "commits": [
+        "f00c7c1"
+      ],
+      "promoted_from_observation": "OBS-09 (badge part)"
+    },
+    {
+      "id": "BUG-027",
+      "severity": "Low",
+      "category": "Documentation",
+      "component": "README, Sync page",
+      "title": "'sync recent is all you need' leaves maps played without passing counted as Untouched",
+      "files_pre_fix": [
+        "README.md:140",
+        "src/OsuTracker.Web/Components/Pages/SyncStatus.razor:91"
+      ],
+      "description": {
+        "current": "The README said that once the backfill is done, `sync recent` is all you need, and the Sync page said it keeps everything current. It asks osu! for passes only and never writes playcounts.",
+        "expected": "The docs name all three timers (recent every few hours, playcounts daily, catalog monthly) and say why."
+      },
+      "root_cause": "Guidance written for the number `sync recent` moves (Passed) and read as covering every rung.",
+      "impact": "Anyone following the README saw every map they then played without passing stay Untouched instead of Attempted.",
+      "reproduction": "From the code: RecentScoresJob requests passes only and has no PlayCounts write, and ProgressQueryService.Attempted is defined by PlayCounts.",
+      "fix": "README section 5 lists the three timers and why playcounts is one of them; the Sync page's recent line says 'new passes'.",
+      "verification": {
+        "tests": [],
+        "note": "Documentation only; checked against RecentScoresJob and ProgressQueryService.Attempted."
+      },
+      "status": "Fixed",
+      "commits": [
+        "286dc0c"
+      ],
+      "promoted_from_observation": "OBS-18"
+    }
+  ],
+  "observations": [
+    {
+      "id": "OBS-01",
+      "area": "Integration",
+      "note": "The token bucket grants all 60 tokens at once each minute, but the spike validated 60/min with evenly spaced requests (Task.Delay(900)); within a burst the instantaneous rate can exceed the ~200/min at which the spike saw connections dropped. Consider TokensPerPeriod = 1 every 60s/RequestsPerMinute. Not changed: needs verification against the live API.",
+      "status": "open",
+      "resolved_by": null
+    },
+    {
+      "id": "OBS-02",
+      "area": "Design",
+      "note": "Maps ranked between monthly catalogue syncs are not in the catalogue when you play them; `sync recent` skips those passes and backfill is run once, so they are lost. Consider recording first-seen dates in the catalogue sync and a `sync scores --new` that backfills only newly added maps.",
+      "status": "open",
+      "resolved_by": null
+    },
+    {
+      "id": "OBS-03",
+      "area": "Data",
+      "note": "CountsAsPass is never recomputed when a set's RankedDate changes (unranked and re-ranked maps).",
+      "status": "open",
+      "resolved_by": null
+    },
+    {
+      "id": "OBS-04",
+      "area": "UI",
+      "note": "The Sync page's budget reads the web host's own OsuRateLimiter, which never makes requests; the CLI jobs run in another process, so the meter is always full.",
+      "status": "open",
+      "resolved_by": null
+    },
+    {
+      "id": "OBS-05",
+      "area": "UI",
+      "note": "The nav badge shows 'sync failed' while any job row is Failed, including a per-mode backfill row superseded by a later full run.",
+      "status": "open",
+      "resolved_by": null
+    },
+    {
+      "id": "OBS-06",
+      "area": "Performance",
+      "note": "PRAGMA synchronous=NORMAL is per connection, so with pooling it reaches only the connection it ran on; add a connection interceptor if the setting matters.",
+      "status": "open",
+      "resolved_by": null
+    },
+    {
+      "id": "OBS-07",
+      "area": "Performance",
+      "note": "Numeric search values are inlined as SQL constants (Expression.Constant), so each distinct value compiles a new query; parameterise them.",
+      "status": "open",
+      "resolved_by": null
+    },
+    {
+      "id": "OBS-08",
+      "area": "Security",
+      "note": "Rate-limit partitions key on the full client IP; an IPv6 client can rotate addresses within its /64.",
+      "status": "fixed",
+      "resolved_by": "BUG-024"
+    },
+    {
+      "id": "OBS-09",
+      "area": "Security",
+      "note": "No security headers (Content-Security-Policy, frame-ancestors, X-Content-Type-Options) on a publicly reachable app. The badge part is fixed (BUG-026). The pages remain: their CSP has to admit Blazor's script and WebSocket and the Google Fonts origins (OBS-14), so it needs building and testing against a live circuit, and whether the app may be framed is the owner's call.",
+      "status": "partly fixed",
+      "resolved_by": "BUG-026"
+    },
+    {
+      "id": "OBS-10",
+      "area": "Security",
+      "note": "The Badge page's 'refresh data' button forces a full snapshot rebuild for any anonymous visitor, bypassing the IsLocal guard the endpoint applies to refresh=1 (cost comparable to a page view).",
+      "status": "open",
+      "resolved_by": null
+    },
+    {
+      "id": "OBS-11",
+      "area": "HTTP",
+      "note": "If-None-Match is compared verbatim: lists, '*' and weak validators added by intermediaries never match.",
+      "status": "fixed",
+      "resolved_by": "BUG-025"
+    },
+    {
+      "id": "OBS-12",
+      "area": "Data",
+      "note": "most_played is paged by offset over an ordering (play count) that changes while you play, so a sync during a session can skip or repeat rows.",
+      "status": "open",
+      "resolved_by": null
+    },
+    {
+      "id": "OBS-13",
+      "area": "CLI",
+      "note": "Ctrl+C always sets e.Cancel = true, so a second Ctrl+C cannot force-quit a job stuck in a non-cancellable call.",
+      "status": "open",
+      "resolved_by": null
+    },
+    {
+      "id": "OBS-14",
+      "area": "Privacy",
+      "note": "Pages load Google Fonts, sending every visitor's IP to Google; self-hosting the fonts would keep 'the only thing that leaves the box is the API calls' true.",
+      "status": "open",
+      "resolved_by": null
+    },
+    {
+      "id": "OBS-15",
+      "area": "Dependencies",
+      "note": "Patch updates available: EF Core 10.0.11 -> 10.0.13, SkiaSharp.NativeAssets.Linux 4.148.0 -> 4.153.1 (keep SkiaSharp itself in step), Microsoft.Extensions.Configuration.* 10.0.0 -> 10.0.13 in the spike. None has a known vulnerability.",
+      "status": "open",
+      "resolved_by": null
+    },
+    {
+      "id": "OBS-16",
+      "area": "Spike (archival)",
+      "note": "Probe P6c (spike/OsuTracker.Spike/Probes.cs:447-456) reports PASS for 's=approved' whenever the request succeeds, but osu! ignores that filter and returns the ranked sweep, as CatalogSyncJob's own comment records. The verdict is a false positive; left unchanged because the spike is kept as a record.",
+      "status": "open",
+      "resolved_by": null
+    },
+    {
+      "id": "OBS-17",
+      "area": "Spike (archival)",
+      "note": "The BUG-023 pattern recurs in the spike (Probes.cs:379, DeepProbe.cs:92: TryGetProperty on a root that may be an array, so the array branch is unreachable); its OsuApiClient also builds an unused request (OsuApiClient.cs:64-66), never disposes the JsonDocument it clones from, and does not retry its own 30 s timeouts. Harmless for a one-off probe; left unchanged.",
+      "status": "open",
+      "resolved_by": null
+    },
+    {
+      "id": "OBS-18",
+      "area": "Docs",
+      "note": "The README says `sync recent` is all you need once backfill is done, but Attempted only moves when `sync playcounts` runs again (the poll records passes, never fails). The Sync page's 'daily' advice for playcounts is the right one; the README should say so.",
+      "status": "fixed",
+      "resolved_by": "BUG-027"
+    }
+  ]
+}

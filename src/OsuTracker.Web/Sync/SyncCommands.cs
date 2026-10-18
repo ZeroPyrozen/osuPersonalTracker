@@ -1,7 +1,9 @@
 using System.Globalization;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using OsuTracker.Web.Data;
 using OsuTracker.Web.Data.Entities;
+using OsuTracker.Web.OsuApi;
 using OsuTracker.Web.Services;
 
 namespace OsuTracker.Web.Sync;
@@ -16,72 +18,124 @@ public static class SyncCommands
     {
         var command = args.Length > 1 ? args[1].ToLowerInvariant() : "";
         var resume = args.Contains("--resume");
-        int? maxPages = null;
-        var mp = Array.FindIndex(args, a => a == "--max-pages");
-        if (mp >= 0 && mp + 1 < args.Length && int.TryParse(args[mp + 1], out var mpv)) maxPages = mpv;
 
-        int? limit = null;
-        var li = Array.FindIndex(args, a => a == "--limit");
-        if (li >= 0 && li + 1 < args.Length && int.TryParse(args[li + 1], out var liv)) limit = liv;
+        if (!TryFlag(args, "--max-pages", ParseCount, out var maxPages)
+            || !TryFlag(args, "--limit", ParseCount, out var limit)
+            || !TryFlag(args, "--mode", ParseMode, out var onlyMode))
+            return 2;
 
-        GameMode? onlyMode = null;
-        var mi = Array.FindIndex(args, a => a == "--mode");
-        if (mi >= 0 && mi + 1 < args.Length)
-            onlyMode = args[mi + 1].ToLowerInvariant() switch
-            {
-                "osu" or "standard" => GameMode.Osu,
-                "taiko" => GameMode.Taiko,
-                "fruits" or "catch" => GameMode.Fruits,
-                "mania" => GameMode.Mania,
-                _ => null
-            };
-
-        var dbFactory = services.GetRequiredService<IDbContextFactory<TrackerDbContext>>();
-        await using (var db = await dbFactory.CreateDbContextAsync(ct))
-            await db.Database.MigrateAsync(ct);
-
-        switch (command)
+        if (command is "catalog" or "playcounts" or "scores" or "recent"
+            && ConfigProblem(services.GetRequiredService<IOptions<OsuApiOptions>>().Value,
+                             needsUser: command != "catalog") is { } problem)
         {
-            case "catalog":
-                await services.GetRequiredService<CatalogSyncJob>().RunAsync(resume, ct, maxPages);
-                await PrintDenominatorsAsync(services, ct);
-                return 0;
+            Console.Error.WriteLine(problem);
+            return 2;
+        }
 
-            case "playcounts":
-                await services.GetRequiredService<PlayCountSyncJob>().RunAsync(resume, ct);
-                await PrintProgressAsync(services, ct);
-                return 0;
+        try
+        {
+            var dbFactory = services.GetRequiredService<IDbContextFactory<TrackerDbContext>>();
+            await using (var db = await dbFactory.CreateDbContextAsync(ct))
+                await db.Database.MigrateAsync(ct);
 
-            case "scores":
-                await services.GetRequiredService<ScoreBackfillJob>().RunAsync(resume, onlyMode, limit, ct);
-                await PrintProgressAsync(services, ct);
-                return 0;
+            switch (command)
+            {
+                case "catalog":
+                    await services.GetRequiredService<CatalogSyncJob>().RunAsync(resume, ct, maxPages);
+                    await PrintDenominatorsAsync(services, ct);
+                    return 0;
 
-            case "recent":
-                await services.GetRequiredService<RecentScoresJob>().RunAsync(ct);
-                await PrintProgressAsync(services, ct);
-                return 0;
+                case "playcounts":
+                    await services.GetRequiredService<PlayCountSyncJob>().RunAsync(resume, ct);
+                    await PrintProgressAsync(services, ct);
+                    return 0;
 
-            case "status":
-                await PrintStatusAsync(services, ct);
-                return 0;
+                case "scores":
+                    await services.GetRequiredService<ScoreBackfillJob>().RunAsync(resume, onlyMode, limit, ct);
+                    await PrintProgressAsync(services, ct);
+                    return 0;
 
-            default:
-                Console.WriteLine("""
-                Usage: dotnet run -- sync <command> [--resume]
+                case "recent":
+                    await services.GetRequiredService<RecentScoresJob>().RunAsync(ct);
+                    await PrintProgressAsync(services, ct);
+                    return 0;
 
-                  catalog     Sweep ranked + approved and fill Beatmapset / Beatmap.
-                              --resume continues from the stored cursor after a crash.
-                  playcounts  Page most_played and fill PlayCount. Defines the backfill queue.
-                  recent      Poll the 24h window for each mode. 4 requests; run this on a
-                              timer once backfill is done and the tracker stays current.
-                  scores      Backfill scores over the queue. --mode <osu|taiko|catch|mania>
-                              narrows it, --limit N caps it, --resume continues.
-                  status      Show job state, denominators and current progress.
-                """);
-                return 2;
+                case "status":
+                    await PrintStatusAsync(services, ct);
+                    return 0;
+
+                default:
+                    Console.WriteLine("""
+                    Usage: dotnet run -- sync <command> [--resume]
+
+                      catalog     Sweep ranked + approved and fill Beatmapset / Beatmap.
+                                  --resume continues from the stored cursor after a crash.
+                      playcounts  Page most_played and fill PlayCount. Defines the backfill queue.
+                      recent      Poll the 24h window for each mode. 4 requests; run this on a
+                                  timer once backfill is done and the tracker stays current.
+                      scores      Backfill scores over the queue. --mode <osu|taiko|catch|mania>
+                                  narrows it, --limit N caps it, --resume continues.
+                      status      Show job state, denominators and current progress.
+                    """);
+                    return 2;
+            }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // The job has already written itself down as Paused. All that is left is not
+            // ending Ctrl+C in a stack trace, and saying so in the exit code shells expect.
+            Console.WriteLine("Cancelled — progress is saved; rerun with --resume to continue.");
+            return 130;
         }
     }
+
+    /// <summary>
+    /// An absent flag is fine; one that is present with a value that does not read is an
+    /// error. Unreadable values used to be dropped silently, which turned
+    /// "sync scores --mode ctb" into a multi-hour backfill of every mode.
+    /// </summary>
+    private static bool TryFlag<T>(string[] args, string name, Func<string, T?> parse, out T? value)
+        where T : struct
+    {
+        value = null;
+        var i = Array.FindIndex(args, a => a == name);
+        if (i < 0) return true;
+
+        if (i + 1 < args.Length && parse(args[i + 1]) is { } parsed)
+        {
+            value = parsed;
+            return true;
+        }
+
+        Console.Error.WriteLine(i + 1 < args.Length
+            ? $"{name}: '{args[i + 1]}' is not a valid value."
+            : $"{name} needs a value.");
+        return false;
+    }
+
+    private static int? ParseCount(string s) =>
+        int.TryParse(s, NumberStyles.None, CultureInfo.InvariantCulture, out var v) && v > 0 ? v : null;
+
+    private static GameMode? ParseMode(string s) => s.ToLowerInvariant() switch
+    {
+        "osu" or "standard" => GameMode.Osu,
+        "taiko" => GameMode.Taiko,
+        "fruits" or "catch" => GameMode.Fruits,
+        "mania" => GameMode.Mania,
+        _ => null
+    };
+
+    /// <summary>
+    /// Checked before anything is fetched. Settings without the OsuApi: prefix never bind,
+    /// and an unbound UserId is 0 — whose endpoints all 404, which the jobs read as "nothing
+    /// there" and record as Completed. On a timer that looks exactly like a working sync.
+    /// </summary>
+    private static string? ConfigProblem(OsuApiOptions o, bool needsUser) =>
+        string.IsNullOrWhiteSpace(o.ClientId) || string.IsNullOrWhiteSpace(o.ClientSecret)
+            ? "OsuApi:ClientId and OsuApi:ClientSecret must both be set (see README, step 2)."
+            : needsUser && o.UserId <= 0
+                ? "OsuApi:UserId must be set to your numeric osu! user id (see README, step 2)."
+                : null;
 
     private static async Task PrintStatusAsync(IServiceProvider services, CancellationToken ct)
     {

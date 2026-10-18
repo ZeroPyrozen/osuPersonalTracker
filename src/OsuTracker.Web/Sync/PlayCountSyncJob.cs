@@ -64,6 +64,9 @@ public sealed class PlayCountSyncJob(
                 var rows = new List<(long BeatmapId, int Count)>(n);
                 foreach (var row in arr.EnumerateArray())
                 {
+                    // TryGetProperty below throws on anything but an object.
+                    if (row.ValueKind != JsonValueKind.Object) continue;
+
                     var id = GetLong(row, "beatmap_id")
                              ?? (row.TryGetProperty("beatmap", out var bm) ? GetLong(bm, "id") : null);
                     if (id is null) continue;
@@ -90,20 +93,25 @@ public sealed class PlayCountSyncJob(
 
             if (ct.IsCancellationRequested)
             {
-                await MarkAsync(SyncJobState.Paused, null, ct);
+                await MarkAsync(SyncJobState.Paused, null);
                 log.LogWarning("Playcount sync cancelled at offset {Offset} — rerun with --resume", offset);
                 return;
             }
 
-            await MarkAsync(SyncJobState.Completed, null, ct);
+            await MarkAsync(SyncJobState.Completed, null);
             log.LogInformation(
                 "Playcount sync complete: {Seen} played maps, {Matched} in catalogue, {Orphaned} outside it",
                 seen, matched, orphaned);
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            await MarkAsync(SyncJobState.Paused, null);
+            log.LogWarning("Playcount sync cancelled at offset {Offset} — rerun with --resume", offset);
+        }
         catch (Exception ex)
         {
             log.LogError(ex, "Playcount sync failed");
-            await MarkAsync(SyncJobState.Failed, SyncError.Describe(ex), ct);
+            await MarkAsync(SyncJobState.Failed, SyncError.Describe(ex));
             throw;
         }
     }
@@ -146,15 +154,16 @@ public sealed class PlayCountSyncJob(
         return (matched, rows.Count - matched);
     }
 
-    private async Task MarkAsync(SyncJobState state, string? error, CancellationToken ct)
+    /// <summary>Not cancellable, for the same reason as CatalogSyncJob's: it is what records a cancel.</summary>
+    private async Task MarkAsync(SyncJobState state, string? error)
     {
-        await using var db = await dbFactory.CreateDbContextAsync(ct);
-        var j = await db.SyncJobs.FindAsync([JobName], ct);
+        await using var db = await dbFactory.CreateDbContextAsync();
+        var j = await db.SyncJobs.FindAsync([JobName]);
         if (j is null) return;
         j.State = state;
         j.Error = error;
         if (state == SyncJobState.Completed) { j.LastSuccessAt = DateTimeOffset.UtcNow; j.Cursor = null; }
-        await db.SaveChangesAsync(ct);
+        await db.SaveChangesAsync();
     }
 
     private static long? GetLong(JsonElement e, string p) =>

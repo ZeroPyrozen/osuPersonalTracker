@@ -19,6 +19,13 @@ public sealed class ScoreBackfillJob(
 {
     public const string JobName = "ScoreBackfill";
 
+    /// <summary>
+    /// Failures in a row that end the run. One failing map is bad luck; ten in a row is the
+    /// API, the network or the credentials, and pressing on would only skip the rest of the
+    /// queue at full speed and then report the job Completed.
+    /// </summary>
+    private const int MaxConsecutiveErrors = 10;
+
     private static string ModeSlug(GameMode m) => m switch
     {
         GameMode.Osu => "osu",
@@ -54,6 +61,7 @@ public sealed class ScoreBackfillJob(
             cursor > 0 ? $", resuming after beatmap {cursor}" : "");
 
         var done = 0; var passes = 0; var preRank = 0; var noScore = 0; var errors = 0;
+        var consecutiveErrors = 0;
         var startedAt = DateTimeOffset.UtcNow;
 
         try
@@ -66,14 +74,20 @@ public sealed class ScoreBackfillJob(
                 try
                 {
                     outcome = await FetchAndStoreAsync(item, ct);
+                    consecutiveErrors = 0;
+
+                    // Only a map that was actually answered moves the cursor, so a run
+                    // that stops on a streak of failures resumes from before the streak.
+                    cursor = item.BeatmapId;
                 }
                 catch (Exception ex) when (!ct.IsCancellationRequested)
                 {
-                    // A single unlucky map must not end a multi-thousand-map run. The
-                    // cursor still advances; the map simply stays unfetched and will be
-                    // picked up by the next pass, since the queue excludes only maps
-                    // that already have a score row.
+                    // A single unlucky map must not end a multi-thousand-map run. The map
+                    // simply stays unfetched and will be picked up by the next pass, since
+                    // the queue excludes only maps that already have a score row.
                     errors++;
+                    if (++consecutiveErrors >= MaxConsecutiveErrors) throw;
+
                     log.LogWarning("Beatmap {Id} failed ({Kind}: {Message}) — skipping",
                         item.BeatmapId, ex.GetType().Name, ex.Message);
                     outcome = Outcome.None;
@@ -88,7 +102,6 @@ public sealed class ScoreBackfillJob(
                 }
 
                 done++;
-                cursor = item.BeatmapId;
 
                 if (done % 25 == 0 || done == queue.Count)
                 {
@@ -114,20 +127,25 @@ public sealed class ScoreBackfillJob(
 
             if (ct.IsCancellationRequested)
             {
-                await MarkAsync(jobName, SyncJobState.Paused, null, ct);
+                await MarkAsync(jobName, SyncJobState.Paused, null);
                 log.LogWarning("Backfill cancelled after {Done} maps — rerun with --resume", done);
                 return;
             }
 
-            await MarkAsync(jobName, SyncJobState.Completed, null, ct);
+            await MarkAsync(jobName, SyncJobState.Completed, null);
             log.LogInformation(
                 "Backfill complete: {Done} maps · {Passes} qualifying passes · {PreRank} pre-rank only · {NoScore} never passed · {Errors} errors",
                 done, passes, preRank, noScore, errors);
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            await MarkAsync(jobName, SyncJobState.Paused, null);
+            log.LogWarning("Backfill cancelled after {Done} maps — rerun with --resume", done);
+        }
         catch (Exception ex)
         {
             log.LogError(ex, "Backfill failed after {Done} maps", done);
-            await MarkAsync(jobName, SyncJobState.Failed, SyncError.Describe(ex), ct);
+            await MarkAsync(jobName, SyncJobState.Failed, SyncError.Describe(ex));
             throw;
         }
     }
@@ -192,14 +210,20 @@ public sealed class ScoreBackfillJob(
 
         var countsAsPass = qualifying.Count > 0;
 
+        // The row shows the best qualifying score but is dated by the first one. PlayedAt
+        // is what "passed in the last 30 days" counts, and a map cleared years ago and
+        // bettered last week is not progress made last week. Without a qualifying pass the
+        // date only explains the row, so it stays with the score on show.
+        var passedAt = countsAsPass ? qualifying.Min(s => s.PlayedAt) : chosen.PlayedAt;
+
         await using (var db = await dbFactory.CreateDbContextAsync(ct))
         {
             db.Scores.Add(new Score
             {
                 BeatmapId = item.BeatmapId,
                 ScoreId = chosen.ScoreId,
-                PlayedAt = chosen.PlayedAt,
-                PlayedAtUnix = chosen.PlayedAt.ToUnixTimeSeconds(),
+                PlayedAt = passedAt,
+                PlayedAtUnix = passedAt.ToUnixTimeSeconds(),
                 FetchedAt = DateTimeOffset.UtcNow,
                 CountsAsPass = countsAsPass,
                 Grade = chosen.Grade,
@@ -218,15 +242,20 @@ public sealed class ScoreBackfillJob(
         long ScoreId, DateTimeOffset PlayedAt, string? Grade, double Accuracy,
         int? MaxCombo, string? Mods, bool IsLazer);
 
-    /// <summary>Handles both the /all envelope and a bare single-score response.</summary>
+    /// <summary>
+    /// Handles the /all envelope, a bare array, and a bare single-score response. The kind
+    /// is checked before every TryGetProperty: on anything but an object it throws rather
+    /// than returning false, which left the array branch unreachable.
+    /// </summary>
     private static List<ParsedScore> ExtractScores(JsonElement root)
     {
         var result = new List<ParsedScore>();
+        var isObject = root.ValueKind == JsonValueKind.Object;
 
         JsonElement arr;
-        if (root.TryGetProperty("scores", out var s) && s.ValueKind == JsonValueKind.Array) arr = s;
+        if (isObject && root.TryGetProperty("scores", out var s) && s.ValueKind == JsonValueKind.Array) arr = s;
         else if (root.ValueKind == JsonValueKind.Array) arr = root;
-        else if (root.TryGetProperty("score", out var one) && one.ValueKind == JsonValueKind.Object)
+        else if (isObject && root.TryGetProperty("score", out var one) && one.ValueKind == JsonValueKind.Object)
         {
             var p = ParseOne(one);
             if (p is not null) result.Add(p);
@@ -279,15 +308,16 @@ public sealed class ScoreBackfillJob(
             isLazer);
     }
 
-    private async Task MarkAsync(string jobName, SyncJobState state, string? error, CancellationToken ct)
+    /// <summary>Not cancellable, for the same reason as CatalogSyncJob's: it is what records a cancel.</summary>
+    private async Task MarkAsync(string jobName, SyncJobState state, string? error)
     {
-        await using var db = await dbFactory.CreateDbContextAsync(ct);
-        var j = await db.SyncJobs.FindAsync([jobName], ct);
+        await using var db = await dbFactory.CreateDbContextAsync();
+        var j = await db.SyncJobs.FindAsync([jobName]);
         if (j is null) return;
         j.State = state;
         j.Error = error;
         if (state == SyncJobState.Completed) { j.LastSuccessAt = DateTimeOffset.UtcNow; j.Cursor = null; }
-        await db.SaveChangesAsync(ct);
+        await db.SaveChangesAsync();
     }
 
     private static string? Str(JsonElement e, string p) =>

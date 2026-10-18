@@ -151,7 +151,10 @@ public sealed class BrowseQueryService(IDbContextFactory<TrackerDbContext> dbFac
             _ => q.OrderBy(x => x.StarRating).ThenBy(x => x.Id)
         };
 
-        var page = Math.Max(0, f.Page);
+        // Clamped so the offset cannot overflow. Page 50,000,000 used to wrap negative, which
+        // SQLite reads as zero — page one, served under a page number nobody asked for, so
+        // the redirect for pages past the end never fired.
+        var page = Math.Clamp(f.Page, 0, int.MaxValue / Math.Max(1, f.PageSize));
         var rows = await q.Skip(page * f.PageSize).Take(f.PageSize).ToListAsync(ct);
 
         return new BrowseResult(
@@ -214,12 +217,8 @@ public sealed class BrowseQueryService(IDbContextFactory<TrackerDbContext> dbFac
                              where !s.CountsAsPass
                              select b.Id).CountAsync(ct);
 
-        var played = await (from b in ProgressQueryService.Counted(db, mode)
-                            join p in db.PlayCounts on b.Id equals p.BeatmapId
-                            where p.Count > 0
-                            select b.Id).CountAsync(ct);
-
-        var attempted = Math.Max(0, played - passed);
+        // The ladder's own definition, so a chip cannot drift from the list it opens.
+        var attempted = await ProgressQueryService.Attempted(db, mode).CountAsync(ct);
 
         return new Dictionary<BrowseStatus, int>
         {
@@ -227,7 +226,7 @@ public sealed class BrowseQueryService(IDbContextFactory<TrackerDbContext> dbFac
             [BrowseStatus.Passed] = passed,
             [BrowseStatus.Attempted] = attempted,
             [BrowseStatus.PreRankOnly] = preRank,
-            [BrowseStatus.Untouched] = Math.Max(0, total - passed - attempted)
+            [BrowseStatus.Untouched] = total - passed - attempted
         };
     }
 }
