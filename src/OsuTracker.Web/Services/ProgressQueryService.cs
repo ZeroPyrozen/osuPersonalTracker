@@ -35,11 +35,17 @@ public sealed class ProgressQueryService(IDbContextFactory<TrackerDbContext> dbF
     /// `sync recent` records on a map you had never loaded before has no playcount row
     /// until the next playcount sync. Each one moved a map from Attempted to Untouched,
     /// more of them every day the tracker ran, and the chips stopped matching the lists.
+    ///
+    /// The pass check is correlated on the playcount's id, not the beatmap's, on purpose:
+    /// that way SQLite can only run it once the playcount has matched, so it probes Scores
+    /// for the few thousand played maps rather than for every counted one. Keyed on b.Id
+    /// it ran first, for all 215,000, and cost up to 40% on top of the old subtraction.
     /// </summary>
     public static IQueryable<Beatmap> Attempted(TrackerDbContext db, GameMode? mode = null) =>
-        Counted(db, mode).Where(b =>
-            db.PlayCounts.Any(p => p.BeatmapId == b.Id && p.Count > 0)
-            && !db.Scores.Any(s => s.BeatmapId == b.Id && s.CountsAsPass));
+        from b in Counted(db, mode)
+        join p in db.PlayCounts on b.Id equals p.BeatmapId
+        where p.Count > 0 && !db.Scores.Any(s => s.BeatmapId == p.BeatmapId && s.CountsAsPass)
+        select b;
 
     /// <summary>
     /// Three simple aggregates rather than one clever query. A single grouped join with
