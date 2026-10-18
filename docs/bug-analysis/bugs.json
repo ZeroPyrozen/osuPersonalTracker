@@ -4,18 +4,21 @@
   "base_commit": "613e19d",
   "generated": "2026-10-18",
   "summary": {
-    "verified_bugs": 23,
+    "verified_bugs": 27,
     "by_severity": {
       "Critical": 1,
       "High": 4,
       "Medium": 7,
-      "Low": 11
+      "Low": 15
     },
-    "fixed": 23,
-    "observations_not_fixed": 18,
+    "fixed": 27,
+    "found_in_first_pass": 23,
+    "promoted_from_observations": 4,
+    "observations_total": 18,
+    "observations_not_fixed": 15,
     "tests_added": {
-      "methods": 78,
-      "cases": 107
+      "methods": 91,
+      "cases": 123
     }
   },
   "bugs": [
@@ -697,98 +700,256 @@
       "commits": [
         "3837077"
       ]
+    },
+    {
+      "id": "BUG-024",
+      "severity": "Low",
+      "category": "Security / Rate limiting",
+      "component": "Rate limiters (badges, /_blazor/negotiate)",
+      "title": "IPv6 clients get a fresh rate-limit budget per address",
+      "files_pre_fix": [
+        "src/OsuTracker.Web/Program.cs:70",
+        "src/OsuTracker.Web/Program.cs:89"
+      ],
+      "description": {
+        "current": "Both partitioned limiters keyed on RemoteIpAddress.ToString(). An IPv6 client is normally assigned a whole /64, so it could send each request from a new address and never meet either limit.",
+        "expected": "One budget per IPv6 /64, just as everyone behind one IPv4 NAT already shares one."
+      },
+      "root_cause": "An IPv6 address treated as a client identity.",
+      "impact": "For any client reaching the app over IPv6, the badge limits (which bound PNG rasterising) and the negotiate cap (which bounds circuit creation) did not apply.",
+      "reproduction": "Keys for 2001:db8:1:2::1 and 2001:db8:1:2:ffff:ffff:ffff:fffe -> two different strings, so two budgets.",
+      "fix": "ClientAddress.PartitionKey: IPv4 (and v4-mapped IPv6) by address, IPv6 by its /64; both limiters use it.",
+      "verification": {
+        "tests": [
+          "ClientAddressTests.Every_address_in_one_ipv6_slash64_is_one_client",
+          "ClientAddressTests.A_v4_mapped_address_counts_as_the_ipv4_client_it_is",
+          "ClientAddressTests.Neighbouring_ipv6_networks_stay_apart",
+          "ClientAddressTests.Each_ipv4_address_is_its_own_client",
+          "ClientAddressTests.No_address_is_one_shared_unknown_client"
+        ]
+      },
+      "status": "Fixed",
+      "commits": [
+        "a627d3a"
+      ],
+      "promoted_from_observation": "OBS-08"
+    },
+    {
+      "id": "BUG-025",
+      "severity": "Low",
+      "category": "HTTP caching (RFC 9110)",
+      "component": "Badge endpoints",
+      "title": "If-None-Match compared verbatim: weak tags, lists and '*' never revalidate",
+      "files_pre_fix": [
+        "src/OsuTracker.Web/Badges/BadgeEndpoints.cs:149"
+      ],
+      "description": {
+        "current": "The raw header was compared with the ETag as one string. A tag weakened to W/\"...\" by a compressing proxy, a list of several tags, and \"*\" each missed, so the revalidation got the whole badge again.",
+        "expected": "If-None-Match as RFC 9110 section 13.1.2 defines it: \"*\" or a list of entity tags, compared weakly; a match is a 304."
+      },
+      "root_cause": "A hand-rolled string comparison in place of the framework's typed header parser.",
+      "impact": "Each such revalidation re-sent the full badge (up to ~450 KB for a download-scale PNG) instead of an empty 304. The image itself was always correct.",
+      "reproduction": "GET /badge.svg with If-None-Match: W/\"<etag>\" (or \"x\", \"<etag>\" or *) -> 200 with the full SVG.",
+      "fix": "IsNotModified reads GetTypedHeaders().IfNoneMatch and matches \"*\" or any tag by weak comparison; a malformed value falls through to a 200.",
+      "verification": {
+        "tests": [
+          "BadgeEndpointTests.A_tag_weakened_by_a_proxy_still_revalidates",
+          "BadgeEndpointTests.A_list_of_tags_revalidates_when_any_of_them_matches",
+          "BadgeEndpointTests.A_star_revalidates_any_current_badge",
+          "BadgeEndpointTests.An_unchanged_badge_revalidates_to_304",
+          "BadgeEndpointTests.A_stale_or_malformed_tag_gets_the_badge"
+        ]
+      },
+      "status": "Fixed",
+      "commits": [
+        "f00c7c1"
+      ],
+      "promoted_from_observation": "OBS-11"
+    },
+    {
+      "id": "BUG-026",
+      "severity": "Low",
+      "category": "Security hardening",
+      "component": "Badge endpoints",
+      "title": "Badge responses carry no Content-Security-Policy or nosniff",
+      "files_pre_fix": [
+        "src/OsuTracker.Web/Badges/BadgeEndpoints.cs:147"
+      ],
+      "description": {
+        "current": "Opened directly, the SVG is a document on the app's own origin, built from query-string options, and it was served without a CSP. Neither format carried X-Content-Type-Options.",
+        "expected": "The SVG can do nothing but draw its own markup (default-src 'none'), and neither format is content-sniffed."
+      },
+      "root_cause": "No response hardening on the one public document the app builds from request input.",
+      "impact": "No injection was found: mode, layout and theme parse to fixed values and the accent must be a known name or validated hex. So this is depth, not a hole; without it, one escaping slip in a later change would run script on the app's origin.",
+      "reproduction": "curl -I /badge.svg -> no Content-Security-Policy and no X-Content-Type-Options header.",
+      "fix": "Every badge response sets Content-Security-Policy: default-src 'none' and X-Content-Type-Options: nosniff. Headless Chromium renders both layouts under the policy with no violations.",
+      "verification": {
+        "tests": [
+          "BadgeEndpointTests.The_svg_can_run_nothing_even_when_opened_as_a_page",
+          "BadgeEndpointTests.The_png_is_not_sniffed_as_anything_else"
+        ]
+      },
+      "status": "Fixed",
+      "commits": [
+        "f00c7c1"
+      ],
+      "promoted_from_observation": "OBS-09 (badge part)"
+    },
+    {
+      "id": "BUG-027",
+      "severity": "Low",
+      "category": "Documentation",
+      "component": "README, Sync page",
+      "title": "'sync recent is all you need' leaves maps played without passing counted as Untouched",
+      "files_pre_fix": [
+        "README.md:140",
+        "src/OsuTracker.Web/Components/Pages/SyncStatus.razor:91"
+      ],
+      "description": {
+        "current": "The README said that once the backfill is done, `sync recent` is all you need, and the Sync page said it keeps everything current. It asks osu! for passes only and never writes playcounts.",
+        "expected": "The docs name all three timers (recent every few hours, playcounts daily, catalog monthly) and say why."
+      },
+      "root_cause": "Guidance written for the number `sync recent` moves (Passed) and read as covering every rung.",
+      "impact": "Anyone following the README saw every map they then played without passing stay Untouched instead of Attempted.",
+      "reproduction": "From the code: RecentScoresJob requests passes only and has no PlayCounts write, and ProgressQueryService.Attempted is defined by PlayCounts.",
+      "fix": "README section 5 lists the three timers and why playcounts is one of them; the Sync page's recent line says 'new passes'.",
+      "verification": {
+        "tests": [],
+        "note": "Documentation only; checked against RecentScoresJob and ProgressQueryService.Attempted."
+      },
+      "status": "Fixed",
+      "commits": [
+        "286dc0c"
+      ],
+      "promoted_from_observation": "OBS-18"
     }
   ],
   "observations": [
     {
       "id": "OBS-01",
       "area": "Integration",
-      "note": "The token bucket grants all 60 tokens at once each minute, but the spike validated 60/min with evenly spaced requests (Task.Delay(900)); within a burst the instantaneous rate can exceed the ~200/min at which the spike saw connections dropped. Consider TokensPerPeriod = 1 every 60s/RequestsPerMinute. Not changed: needs verification against the live API."
+      "note": "The token bucket grants all 60 tokens at once each minute, but the spike validated 60/min with evenly spaced requests (Task.Delay(900)); within a burst the instantaneous rate can exceed the ~200/min at which the spike saw connections dropped. Consider TokensPerPeriod = 1 every 60s/RequestsPerMinute. Not changed: needs verification against the live API.",
+      "status": "open",
+      "resolved_by": null
     },
     {
       "id": "OBS-02",
       "area": "Design",
-      "note": "Maps ranked between monthly catalogue syncs are not in the catalogue when you play them; `sync recent` skips those passes and backfill is run once, so they are lost. Consider recording first-seen dates in the catalogue sync and a `sync scores --new` that backfills only newly added maps."
+      "note": "Maps ranked between monthly catalogue syncs are not in the catalogue when you play them; `sync recent` skips those passes and backfill is run once, so they are lost. Consider recording first-seen dates in the catalogue sync and a `sync scores --new` that backfills only newly added maps.",
+      "status": "open",
+      "resolved_by": null
     },
     {
       "id": "OBS-03",
       "area": "Data",
-      "note": "CountsAsPass is never recomputed when a set's RankedDate changes (unranked and re-ranked maps)."
+      "note": "CountsAsPass is never recomputed when a set's RankedDate changes (unranked and re-ranked maps).",
+      "status": "open",
+      "resolved_by": null
     },
     {
       "id": "OBS-04",
       "area": "UI",
-      "note": "The Sync page's budget reads the web host's own OsuRateLimiter, which never makes requests; the CLI jobs run in another process, so the meter is always full."
+      "note": "The Sync page's budget reads the web host's own OsuRateLimiter, which never makes requests; the CLI jobs run in another process, so the meter is always full.",
+      "status": "open",
+      "resolved_by": null
     },
     {
       "id": "OBS-05",
       "area": "UI",
-      "note": "The nav badge shows 'sync failed' while any job row is Failed, including a per-mode backfill row superseded by a later full run."
+      "note": "The nav badge shows 'sync failed' while any job row is Failed, including a per-mode backfill row superseded by a later full run.",
+      "status": "open",
+      "resolved_by": null
     },
     {
       "id": "OBS-06",
       "area": "Performance",
-      "note": "PRAGMA synchronous=NORMAL is per connection, so with pooling it reaches only the connection it ran on; add a connection interceptor if the setting matters."
+      "note": "PRAGMA synchronous=NORMAL is per connection, so with pooling it reaches only the connection it ran on; add a connection interceptor if the setting matters.",
+      "status": "open",
+      "resolved_by": null
     },
     {
       "id": "OBS-07",
       "area": "Performance",
-      "note": "Numeric search values are inlined as SQL constants (Expression.Constant), so each distinct value compiles a new query; parameterise them."
+      "note": "Numeric search values are inlined as SQL constants (Expression.Constant), so each distinct value compiles a new query; parameterise them.",
+      "status": "open",
+      "resolved_by": null
     },
     {
       "id": "OBS-08",
       "area": "Security",
-      "note": "Rate-limit partitions key on the full client IP; an IPv6 client can rotate addresses within its /64."
+      "note": "Rate-limit partitions key on the full client IP; an IPv6 client can rotate addresses within its /64.",
+      "status": "fixed",
+      "resolved_by": "BUG-024"
     },
     {
       "id": "OBS-09",
       "area": "Security",
-      "note": "No security headers (Content-Security-Policy, frame-ancestors, X-Content-Type-Options) on a publicly reachable app; consider a CSP of default-src 'none' on the SVG badge."
+      "note": "No security headers (Content-Security-Policy, frame-ancestors, X-Content-Type-Options) on a publicly reachable app. The badge part is fixed (BUG-026). The pages remain: their CSP has to admit Blazor's script and WebSocket and the Google Fonts origins (OBS-14), so it needs building and testing against a live circuit, and whether the app may be framed is the owner's call.",
+      "status": "partly fixed",
+      "resolved_by": "BUG-026"
     },
     {
       "id": "OBS-10",
       "area": "Security",
-      "note": "The Badge page's 'refresh data' button forces a full snapshot rebuild for any anonymous visitor, bypassing the IsLocal guard the endpoint applies to refresh=1 (cost comparable to a page view)."
+      "note": "The Badge page's 'refresh data' button forces a full snapshot rebuild for any anonymous visitor, bypassing the IsLocal guard the endpoint applies to refresh=1 (cost comparable to a page view).",
+      "status": "open",
+      "resolved_by": null
     },
     {
       "id": "OBS-11",
       "area": "HTTP",
-      "note": "If-None-Match is compared verbatim: lists, '*' and weak validators added by intermediaries never match."
+      "note": "If-None-Match is compared verbatim: lists, '*' and weak validators added by intermediaries never match.",
+      "status": "fixed",
+      "resolved_by": "BUG-025"
     },
     {
       "id": "OBS-12",
       "area": "Data",
-      "note": "most_played is paged by offset over an ordering (play count) that changes while you play, so a sync during a session can skip or repeat rows."
+      "note": "most_played is paged by offset over an ordering (play count) that changes while you play, so a sync during a session can skip or repeat rows.",
+      "status": "open",
+      "resolved_by": null
     },
     {
       "id": "OBS-13",
       "area": "CLI",
-      "note": "Ctrl+C always sets e.Cancel = true, so a second Ctrl+C cannot force-quit a job stuck in a non-cancellable call."
+      "note": "Ctrl+C always sets e.Cancel = true, so a second Ctrl+C cannot force-quit a job stuck in a non-cancellable call.",
+      "status": "open",
+      "resolved_by": null
     },
     {
       "id": "OBS-14",
       "area": "Privacy",
-      "note": "Pages load Google Fonts, sending every visitor's IP to Google; self-hosting the fonts would keep 'the only thing that leaves the box is the API calls' true."
+      "note": "Pages load Google Fonts, sending every visitor's IP to Google; self-hosting the fonts would keep 'the only thing that leaves the box is the API calls' true.",
+      "status": "open",
+      "resolved_by": null
     },
     {
       "id": "OBS-15",
       "area": "Dependencies",
-      "note": "Patch updates available: EF Core 10.0.11 -> 10.0.13, SkiaSharp.NativeAssets.Linux 4.148.0 -> 4.153.1 (keep SkiaSharp itself in step), Microsoft.Extensions.Configuration.* 10.0.0 -> 10.0.13 in the spike. None has a known vulnerability."
+      "note": "Patch updates available: EF Core 10.0.11 -> 10.0.13, SkiaSharp.NativeAssets.Linux 4.148.0 -> 4.153.1 (keep SkiaSharp itself in step), Microsoft.Extensions.Configuration.* 10.0.0 -> 10.0.13 in the spike. None has a known vulnerability.",
+      "status": "open",
+      "resolved_by": null
     },
     {
       "id": "OBS-16",
       "area": "Spike (archival)",
-      "note": "Probe P6c (spike/OsuTracker.Spike/Probes.cs:447-456) reports PASS for 's=approved' whenever the request succeeds, but osu! ignores that filter and returns the ranked sweep, as CatalogSyncJob's own comment records. The verdict is a false positive; left unchanged because the spike is kept as a record."
+      "note": "Probe P6c (spike/OsuTracker.Spike/Probes.cs:447-456) reports PASS for 's=approved' whenever the request succeeds, but osu! ignores that filter and returns the ranked sweep, as CatalogSyncJob's own comment records. The verdict is a false positive; left unchanged because the spike is kept as a record.",
+      "status": "open",
+      "resolved_by": null
     },
     {
       "id": "OBS-17",
       "area": "Spike (archival)",
-      "note": "The BUG-023 pattern recurs in the spike (Probes.cs:379, DeepProbe.cs:92: TryGetProperty on a root that may be an array, so the array branch is unreachable); its OsuApiClient also builds an unused request (OsuApiClient.cs:64-66), never disposes the JsonDocument it clones from, and does not retry its own 30 s timeouts. Harmless for a one-off probe; left unchanged."
+      "note": "The BUG-023 pattern recurs in the spike (Probes.cs:379, DeepProbe.cs:92: TryGetProperty on a root that may be an array, so the array branch is unreachable); its OsuApiClient also builds an unused request (OsuApiClient.cs:64-66), never disposes the JsonDocument it clones from, and does not retry its own 30 s timeouts. Harmless for a one-off probe; left unchanged.",
+      "status": "open",
+      "resolved_by": null
     },
     {
       "id": "OBS-18",
       "area": "Docs",
-      "note": "The README says `sync recent` is all you need once backfill is done, but Attempted only moves when `sync playcounts` runs again (the poll records passes, never fails). The Sync page's 'daily' advice for playcounts is the right one; the README should say so."
+      "note": "The README says `sync recent` is all you need once backfill is done, but Attempted only moves when `sync playcounts` runs again (the poll records passes, never fails). The Sync page's 'daily' advice for playcounts is the right one; the README should say so.",
+      "status": "fixed",
+      "resolved_by": "BUG-027"
     }
   ]
 }

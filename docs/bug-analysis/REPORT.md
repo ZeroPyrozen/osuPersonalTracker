@@ -8,11 +8,14 @@ Machine-readable versions: [`bugs.json`](bugs.json) (every field below, plus obs
 
 ## Executive summary
 
-A full review of the repository found **23 verifiable defects: 1 critical, 4 high, 7 medium
-and 11 low. All 23 are fixed.** Each fix was preceded by a test that failed against the original code, and
-the repository now has its first test suite (78 test methods, 107 cases, all passing) and
-its first CI pipeline. A further 18 observations (§6) are written up rather than changed. They
-are design questions, need checking against the live osu! API, or sit in the archived spike.
+A full review of the repository found **27 verifiable defects: 1 critical, 4 high, 7 medium
+and 15 low. All 27 are fixed.** Twenty-three came from the first pass. Four more (BUG-024 to
+BUG-027) began as observations, and a second pass found each had a clear, contained fix.
+Every code fix has a test that fails against the original code; BUG-027 is a
+documentation fix. The repository now has its first test suite (91 test methods, 123 cases,
+all passing) and its first CI pipeline. Fifteen observations (§6) remain written up rather
+than changed. They are design questions, need checking against the live osu! API, or sit in
+the archived spike.
 
 The findings that matter most:
 
@@ -44,6 +47,10 @@ dependencies. Behaviour you will notice:
 - A catalogue sweep **fails** on a 404 or a malformed page instead of "completing".
 - A backfill **stops** after 10 consecutive failures; `--resume` retries them.
 - The recent poll no longer asks for failed plays.
+- Rate limits count an IPv6 **/64** as one client, as an IPv4 NAT already was.
+- Badges answer proxy revalidations (`W/` tags, tag lists, `*`) with **304**, and carry
+  `Content-Security-Policy: default-src 'none'` and `X-Content-Type-Options: nosniff`.
+- The README and Sync page now say to run `sync playcounts` daily, not just `sync recent`.
 
 **Existing databases.**
 
@@ -87,9 +94,9 @@ Patch updates are available (OBS-15).
 
 **Build and CI.** The solution built with 0 warnings. **There was no CI and no tests.**
 
-**Documentation.** The README is accurate and unusually precise about the counting rules.
-Two statements now carry qualifications in the README: recent polling is capped at 100
-passes per mode, and tests exist.
+**Documentation.** The README is unusually precise about the counting rules. It now also
+says that recent polling is capped at 100 passes per mode and how to run the tests, and it
+no longer says `sync recent` alone keeps the tracker current (BUG-027).
 
 ---
 
@@ -141,6 +148,12 @@ passes per mode, and tests exist.
 | BUG-020 | Low | UI / config | Sync page | Budget panel hard-codes "/ 60" | `f06471d` |
 | BUG-021 | Low | Concurrency / UI | Browse, mode page | An older load can overwrite a newer view | `f06471d` |
 | BUG-023 | Low | JSON robustness | Backfill, recent, playcounts | Shape guards throw instead of skipping | `3837077` |
+| BUG-024 | Low | Security / rate limiting | Rate limiters | IPv6 clients get a fresh budget from every address in their /64 | `a627d3a` |
+| BUG-025 | Low | HTTP caching | Badge | `If-None-Match` compared verbatim: `W/` tags, lists and `*` never revalidate | `f00c7c1` |
+| BUG-026 | Low | Security hardening | Badge | Badge responses carry no CSP and no `nosniff` | `f00c7c1` |
+| BUG-027 | Low | Documentation | README, Sync page | "`sync recent` is all you need" leaves maps played without passing counted Untouched | `286dc0c` |
+
+BUG-024 to BUG-027 were promoted from OBS-08, OBS-11, OBS-09 (its badge part) and OBS-18.
 
 ---
 
@@ -259,8 +272,8 @@ Line numbers refer to the original code at `613e19d`.
 
 - **Behaviour.** Attempted was computed as *played − passed*. That assumes every pass has a
   playcount row, but a pass recorded by `sync recent` on a map never loaded before has none
-  until the next `sync playcounts`. The README says that once backfill is done, `sync recent`
-  is all you need; the Sync page suggests running playcounts daily.
+  until the next `sync playcounts`. The README said that once backfill is done, `sync recent`
+  is all you need (corrected as BUG-027); the Sync page suggests running playcounts daily.
 - **Reproduce.** One such pass gives a ladder of (total 5, passed 2, attempted **1**,
   untouched **2**), where the truth is (5, 2, 2, 1). The Untouched chip said 2 and opened a
   list of 1. On the synthetic 215k-map catalogue, 29 catch maps were misplaced.
@@ -346,6 +359,10 @@ Line numbers refer to the original code at `613e19d`.
 | BUG-020 | Sync page printed "N / 60" whatever the configured rate (`SyncStatus.razor:22`, `:27`) | Magic number → reads `IOptions<OsuApiOptions>` | `The_sync_page_budget_reads_the_configured_rate` |
 | BUG-021 | Overlapping loads: Browse showed the previous filter's rows under new chips; a mode page showed another mode's star bands; "show more" appended to the wrong mode's list (`Browse.razor:248`, `ModeDetail.razor:188`, `:212`) | Per-await publishing → a load counter; publish only the newest | Three bUnit tests that release gated DB calls in reverse order |
 | BUG-023 | `TryGetProperty` throws on non-objects: the backfill's array branch was unreachable; one bad element failed a whole poll or sync (`ScoreBackfillJob.cs:227`, `RecentScoresJob.cs:78`, `PlayCountSyncJob.cs:68`) | Assumed TryGetProperty is total → check `ValueKind` first | Three skip-not-fail tests |
+| BUG-024 | Both limiters keyed on the full client address, so an IPv6 client could rotate through its /64 and start every budget over (`Program.cs:70`, `:89`) | An address treated as an identity → `ClientAddress` keys IPv6 by /64, IPv4 and v4-mapped IPv6 by address | `Every_address_in_one_ipv6_slash64_is_one_client`, `A_v4_mapped_address_counts_as_the_ipv4_client_it_is`, plus 3 boundary pins |
+| BUG-025 | `If-None-Match` compared as one raw string: a proxy's `W/"…"`, a list of tags and `*` each got the whole badge instead of a 304 (`BadgeEndpoints.cs:149`) | Hand-rolled comparison → typed header; `*` or any tag, compared weakly (RFC 9110 §13.1.2) | `A_tag_weakened_by_a_proxy_still_revalidates`, `…list_of_tags…`, `…star…`; malformed values still get a 200 |
+| BUG-026 | The SVG, a document on the app's origin built from query input, had no CSP, and neither format had `nosniff` (`BadgeEndpoints.cs:147`). No injection was found: this is depth | No hardening on the one input-built public document → `default-src 'none'` and `nosniff`; both layouts checked in headless Chromium | `The_svg_can_run_nothing_even_when_opened_as_a_page`, `The_png_is_not_sniffed_as_anything_else` |
+| BUG-027 | README: "`sync recent` … is all you need"; Sync page: "keeps everything current" (`README.md:140`, `SyncStatus.razor:91`). The poll asks for passes only and never writes playcounts | Guidance for Passed read as covering every rung → all three timers, and why | Documentation; checked against `RecentScoresJob` and `ProgressQueryService.Attempted` |
 
 ---
 
@@ -353,8 +370,10 @@ Line numbers refer to the original code at `613e19d`.
 
 ### Test-first evidence
 
-Every bug-specific test was run against the original code first and failed for the
-diagnosed reason, then passed after the fix:
+Every bug-specific test was run against the original code and failed for the diagnosed
+reason, then passed after the fix. For BUG-001 to BUG-023 the test came first. For BUG-025
+and BUG-026 the original endpoint file (unchanged on the branch until then) was put back
+to show it:
 
 | Bug(s) | Observed failure before the fix |
 |---|---|
@@ -373,6 +392,12 @@ diagnosed reason, then passed after the fix:
 | 017, 018, 019, 020 | Page one returned for page 50,000,000; year filter for `2019-13`; 10 permits left; "60 / 60" |
 | 021 | Browse showed `[2, 4]` (attempted) under Untouched; bands lost; "Mania Set" on the taiko page |
 | 022, 023 | 4/5 maps Departed after a 404 or `{}`; `InvalidOperationException` on a non-object element |
+| 024 | `2001:db8:1:2::1` and `2001:db8:1:2:ffff:ffff:ffff:fffe` keyed as two clients; `::ffff:203.0.113.5` keyed apart from `203.0.113.5` |
+| 025, 026 | `W/` tag, two-tag list and `*` each answered 200 instead of 304; no `Content-Security-Policy` or `X-Content-Type-Options` header |
+
+BUG-024's fix is a new helper, so its tests ran against the original keying expression
+(`RemoteIpAddress?.ToString() ?? "unknown"`) substituted into that helper: 2 of 5 failed,
+and the other 3 are boundary pins. BUG-027 changes documentation only and has no test.
 
 One hypothesis was disproved this way. A first mode-page race test **passed** against the
 original code: that page re-reads its `_mode` field after every await, so a stale load
@@ -389,14 +414,23 @@ the first is in flight. The test was corrected to hold exactly that query.
   credentials are read and no request leaves the machine.
 - **`GatedDbFactory`**: holds chosen DB context requests until the test releases them, which
   makes UI races deterministic. The page tests passed 15 of 15 consecutive runs.
+- **`BadgeEndpointTests`**: the badge endpoints in a real ASP.NET Core pipeline on an
+  in-memory `TestServer`. A hook delivers a raw `If-None-Match` line the way Kestrel does,
+  because `HttpClient` splits a typed list before the server sees it, which would let a
+  broken list comparison pass.
 - **Behaviour pins**: 22 further tests lock down existing correct behaviour, so the fixes
   cannot move it. They cover reconciliation of a finished sweep, convert and pre-rank
   rejection, star-band semantics, quoted search terms, SVG well-formedness, accent
-  sanitisation, real PNG output, token sharing, and others.
+  sanitisation, real PNG output, token sharing, and others. The second pass added six:
+  a matching tag still revalidates (SVG and PNG), stale or malformed tags still get the
+  badge, `refresh=1` from the internet is still served from the cache, and IPv4 clients,
+  neighbouring IPv6 networks and address-less requests keep their own keys.
 
 ### Regression and smoke testing
 
-- Full suite: **107/107 passing**.
+- Full suite: **123/123 passing**.
+- Badge headers, in headless Chromium against the fixed build: the banner and slim layouts
+  both render under `default-src 'none'`, with no CSP violations or console errors.
 - End to end, against the original build and the fixed build. Both ran in the Production
   environment on a fresh database, and every cell was measured:
 
@@ -431,7 +465,8 @@ the first is in flight. The test was corrected to hold exactly that query.
 No known vulnerabilities in the app's dependencies. One was caught and avoided in a
 *candidate* test dependency: bUnit 2.2.2 pulls in AngleSharp 1.4.0 (GHSA-pgww-w46g-26qg,
 fixed in 1.5.0), so bUnit is pinned to 2.10.3. CI now fails the restore on any moderate or
-worse advisory. The gate was proven against that exact package.
+worse advisory. The gate was proven against that exact package. The second pass added
+`Microsoft.AspNetCore.TestHost` 10.0.11, to the test project only, and the audit is still clean.
 
 ### Performance (BUG-006 changes a hot query)
 
@@ -452,9 +487,11 @@ final form is at parity with the original and gives the right answer.
 
 ---
 
-## 6. Observations not fixed
+## 6. Observations
 
 These need an owner decision, live-API verification, or are features rather than defects.
+Three were later promoted to defects and fixed, and one in part; they keep their IDs so
+earlier references still resolve. Fifteen remain open.
 
 | ID | Area | Observation and recommendation |
 |---|---|---|
@@ -465,17 +502,17 @@ These need an owner decision, live-API verification, or are features rather than
 | OBS-05 | UI | The nav shows "sync failed" while any job row is Failed, including a per-mode backfill row superseded by a later full run. |
 | OBS-06 | Performance | `PRAGMA synchronous=NORMAL` is per connection; with pooling it reaches one connection only. Use a connection interceptor if it matters. |
 | OBS-07 | Performance | Numeric search values are inlined as SQL constants, so each distinct value compiles a new EF query. Parameterise them. |
-| OBS-08 | Security | Rate-limit partitions key on the full IP; IPv6 clients can rotate within their /64. |
-| OBS-09 | Security | No CSP, `frame-ancestors` or `X-Content-Type-Options` on a public app. Consider `default-src 'none'` for the SVG badge. |
+| OBS-08 | Security | **Fixed as BUG-024.** Rate-limit partitions keyed on the full IP; IPv6 clients could rotate within their /64. |
+| OBS-09 | Security | **Badge part fixed as BUG-026.** The pages still send no CSP, `frame-ancestors` or `X-Content-Type-Options`. Their CSP has to admit Blazor's script and WebSocket and the Google Fonts origins (OBS-14), so it needs building and testing against a live circuit. Whether the app may be framed is the owner's call. |
 | OBS-10 | Security | The Badge page's "refresh data" forces a full rebuild for anonymous visitors, bypassing the endpoint's `IsLocal` guard. The cost is comparable to a page view. |
-| OBS-11 | HTTP | `If-None-Match` is compared verbatim: lists, `*`, and weak validators added by proxies never match. |
+| OBS-11 | HTTP | **Fixed as BUG-025.** `If-None-Match` was compared verbatim: lists, `*`, and weak validators added by proxies never matched. |
 | OBS-12 | Data | `most_played` is paged by offset over an ordering that changes as you play. Syncing mid-session can skip or repeat rows. |
 | OBS-13 | CLI | A second Ctrl+C cannot force-quit (`e.Cancel = true` always). |
 | OBS-14 | Privacy | Pages load Google Fonts, so every visitor's IP goes to Google. Self-host the fonts to keep the README's "only API calls leave the box". |
 | OBS-15 | Dependencies | Patch updates: EF Core 10.0.11 → 10.0.13; SkiaSharp.NativeAssets.Linux 4.148.0 → 4.153.1 (move SkiaSharp itself in step); spike configuration packages 10.0.0 → 10.0.13. None is security-relevant. |
 | OBS-16 | Spike (archival) | Probe P6c (`Probes.cs:447-456`) reports PASS for `s=approved` whenever the request succeeds. osu! ignores that filter and returns the ranked sweep, as `CatalogSyncJob`'s own comment records, so the verdict is a false positive. Left unchanged: the spike is kept as a record. |
 | OBS-17 | Spike (archival) | The BUG-023 pattern recurs in the spike (`Probes.cs:379`, `DeepProbe.cs:92`). Its client also builds an unused request (`OsuApiClient.cs:64-66`), never disposes the `JsonDocument` it clones from, and does not retry its own timeouts. Harmless for a one-off probe; left unchanged. |
-| OBS-18 | Docs | The README says `sync recent` is "all you need" once backfill is done. But Attempted only moves when `sync playcounts` runs again: the poll records passes, never fails. The Sync page's "daily" advice for playcounts is the right one; the README should say so. |
+| OBS-18 | Docs | **Fixed as BUG-027.** The README said `sync recent` is "all you need" once backfill is done. But Attempted only moves when `sync playcounts` runs again: the poll records passes, never fails. |
 
 ---
 
@@ -504,6 +541,8 @@ These need an owner decision, live-API verification, or are features rather than
    invariant culture by default. The codebase already did this for numbers; dates were missed.
 10. **Unverified assumptions about external APIs** (007, 023). Encode the provider's contract
     in a test fake, citing the source, as `OsuWebRecent` now does.
+11. **Protocol details done by hand** (024, 025). Read headers through the framework's typed
+    accessors and compare them as the RFC says. Key IPv6 clients by prefix, not by address.
 
 ### Process and tooling
 
@@ -539,7 +578,14 @@ These need an owner decision, live-API verification, or are features rather than
   `claude/repo-bug-analysis-fixes-mbzyx7`. The audit trail is instead one commit per fix
   group. Each message names its bug IDs, root cause and impact.
 - **Versioning.** The application has no versioned public API. User-visible behaviour
-  changes are listed in the executive summary.
+  changes are listed in the executive summary. The badge URLs are the closest thing to
+  one: BUG-025 and BUG-026 only add headers and answer more revalidations with 304, so an
+  embedder that ignores both gets the same images. Under semantic versioning that is a
+  patch.
+- **A /64 per IPv6 client (BUG-024)** is the usual allocation, not a guarantee. A network
+  that hands one customer a /56 still lets that customer spread across 256 budgets, and a
+  provider that puts unrelated customers in one /64 makes them share one. Bucketing wider
+  would make the second case much more common, so /64 is the deliberate trade-off.
 - No secrets were read or written. Tests use fake credentials, and nothing personal was added
   to the repository.
 
@@ -561,4 +607,8 @@ These need an owner decision, live-API verification, or are features rather than
 | `d00563f` | test(badge): PNG really rasterises |
 | `c0676e2` | ci: build, test, dependency audit |
 | `6931c13` | docs: README test section |
-| *(this commit)* | docs: this report, `bugs.json`, `bugs.csv` |
+| `71b6f42` | docs: this report, `bugs.json`, `bugs.csv` |
+| `a627d3a` | fix(security): rate-limit IPv6 clients per /64 (024) |
+| `f00c7c1` | fix(badge): RFC 9110 revalidation; CSP and `nosniff` on badges (025, 026) |
+| `286dc0c` | docs: `sync playcounts` keeps running after the backfill (027) |
+| *(this commit)* | docs: report, `bugs.json`, `bugs.csv` updated for 024–027 |
