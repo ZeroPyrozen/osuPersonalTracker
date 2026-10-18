@@ -31,8 +31,17 @@ public sealed class OsuRateLimiter : IDisposable
         if (!lease.IsAcquired) throw new InvalidOperationException("Rate limiter refused a lease.");
     }
 
-    /// <summary>Drain the bucket so a 429 costs us the rest of the window, not just one retry.</summary>
-    public async Task PenaliseAsync(TimeSpan wait, CancellationToken ct) => await Task.Delay(wait, ct);
+    /// <summary>
+    /// Drain the bucket so a 429 costs us the rest of the window, not just one retry.
+    /// Waiting alone did not do that: the bucket kept whatever it held through the pause,
+    /// so the retry went straight out with a burst queued behind it.
+    /// </summary>
+    public async Task PenaliseAsync(TimeSpan wait, CancellationToken ct)
+    {
+        var held = AvailablePermits;
+        if (held > 0) _limiter.AttemptAcquire(held).Dispose();
+        await Task.Delay(wait, ct);
+    }
 
     public int AvailablePermits => (int)_limiter.GetStatistics()!.CurrentAvailablePermits;
 

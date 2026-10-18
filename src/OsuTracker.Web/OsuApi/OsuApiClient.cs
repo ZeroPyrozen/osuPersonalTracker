@@ -80,6 +80,10 @@ public sealed class OsuApiClient(
     /// HttpRequestException / IOException / a timeout, never as a status code, so a
     /// client that only inspects status codes will crash instead of retrying.
     ///
+    /// A status code that did arrive is an answer, though. 5xx and 408 mean "not now";
+    /// any other 4xx will say the same thing on every attempt, and retrying one used to
+    /// burn five rate-limit tokens and thirty seconds of backoff before failing anyway.
+    ///
     /// Note on cancellation: an HttpClient timeout throws TaskCanceledException whose
     /// own CancellationToken IS already cancelled, so inspecting that token cannot tell
     /// a timeout apart from a real caller cancel. The caller's token is the only
@@ -87,6 +91,7 @@ public sealed class OsuApiClient(
     /// </summary>
     private static bool IsTransient(Exception ex) => ex switch
     {
+        HttpRequestException { StatusCode: { } code } => (int)code >= 500 || code == HttpStatusCode.RequestTimeout,
         HttpRequestException => true,
         IOException => true,
         TimeoutException => true,
