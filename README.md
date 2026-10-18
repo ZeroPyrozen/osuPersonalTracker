@@ -169,8 +169,14 @@ SVG is sharper everywhere else.
 
 ```
 src/OsuTracker.Web/       The application — Blazor Server, EF Core, SQLite
+tests/OsuTracker.Web.Tests/  xUnit + bUnit tests; run them with `dotnet test`
 spike/OsuTracker.Spike/   A throwaway API spike from before the schema existed
 ```
+
+The tests need nothing but the SDK: each one builds a throwaway SQLite database with the
+real migrations, and a fake osu! server stands in for the API, so no credentials are
+read and nothing leaves the machine. CI runs them on every push, along with a check for
+known-vulnerable packages.
 
 Your data lives in `src/OsuTracker.Web/tracker.db`, created automatically on first run.
 It's gitignored, along with credentials and sync logs — nothing personal ends up in the
