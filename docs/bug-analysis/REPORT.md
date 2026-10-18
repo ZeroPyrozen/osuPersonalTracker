@@ -611,4 +611,5 @@ earlier references still resolve. Fifteen remain open.
 | `a627d3a` | fix(security): rate-limit IPv6 clients per /64 (024) |
 | `f00c7c1` | fix(badge): RFC 9110 revalidation; CSP and `nosniff` on badges (025, 026) |
 | `286dc0c` | docs: `sync playcounts` keeps running after the backfill (027) |
-| *(this commit)* | docs: report, `bugs.json`, `bugs.csv` updated for 024–027 |
+| `fad7889` | docs: report, `bugs.json`, `bugs.csv` updated for 024–027 |
+| *(this commit)* | ci: checkout v7.0.1 and setup-dotnet v6.0.0, both on Node 24, pinned by commit |
