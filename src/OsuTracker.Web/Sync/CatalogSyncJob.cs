@@ -41,25 +41,30 @@ public sealed class CatalogSyncJob(
             db.SyncJobs.Add(job);
         }
 
+        // A sweep that completed has nothing left to resume, so --resume on one is a fresh
+        // run — otherwise its count would carry on from the previous run's total.
+        var resuming = resume && job.State != SyncJobState.Completed;
+
         // The reconciliation watermark. On a fresh run this is "now"; on a resume we
         // keep the original watermark so rows written before the crash still count as seen.
-        var runStart = resume && job.RunStartedAt is not null && job.State != SyncJobState.Completed
+        var runStart = resuming && job.RunStartedAt is not null
             ? job.RunStartedAt.Value
             : DateTimeOffset.UtcNow;
 
-        var startCursor = resume ? job.Cursor : null;
+        var startCursor = resuming ? job.Cursor : null;
 
         job.State = SyncJobState.Running;
         job.RunStartedAt = runStart;
         job.LastRunAt = DateTimeOffset.UtcNow;
         job.Error = null;
-        if (!resume) { job.ItemsDone = 0; job.Cursor = null; }
+        if (!resuming) { job.ItemsDone = 0; job.Cursor = null; }
         await db.SaveChangesAsync(ct);
 
-        log.LogInformation("Catalog sync starting (resume={Resume}, watermark={Watermark:u})", resume, runStart);
+        log.LogInformation("Catalog sync starting (resume={Resume}, watermark={Watermark:u})", resuming, runStart);
 
         var totalSets = job.ItemsDone;
         var totalMaps = 0;
+        var stoppedEarly = false;
 
         try
         {
@@ -114,31 +119,46 @@ public sealed class CatalogSyncJob(
                         log.LogInformation("  {Query}: {Pages} pages, {Sets} sets, {Maps} difficulties", query, page, totalSets, totalMaps);
 
                     if (cursor is null) break; // end of this sweep
-                    if (maxPages is not null && page >= maxPages) { log.LogWarning("Stopping early at {Pages} pages (--max-pages)", page); break; }
+                    if (maxPages is not null && page >= maxPages)
+                    {
+                        log.LogWarning("Stopping early at {Pages} pages (--max-pages)", page);
+                        stoppedEarly = true;
+                        break;
+                    }
                 }
 
+                if (stoppedEarly) break;
                 log.LogInformation("Sweep '{Query}' complete: {Pages} pages", query, page);
             }
 
-            if (ct.IsCancellationRequested)
+            // Only reconcile after a sweep that actually finished. Running this on a
+            // partial run would mark most of the catalogue as departed — and stopping at
+            // --max-pages is a partial run as surely as a cancel is, so it pauses too.
+            if (ct.IsCancellationRequested || stoppedEarly)
             {
-                await MarkAsync(SyncJobState.Paused, null, ct);
-                log.LogWarning("Catalog sync cancelled — cursor preserved, rerun with --resume");
+                await MarkAsync(SyncJobState.Paused, null);
+                log.LogWarning("Catalog sync {Reason} — cursor preserved, rerun with --resume",
+                    stoppedEarly ? "stopped at --max-pages" : "cancelled");
                 return;
             }
 
-            // Only reconcile after a sweep that actually finished. Running this on a
-            // partial run would mark most of the catalogue as departed.
             var departed = await ReconcileAsync(runStart, ct);
-            await MarkAsync(SyncJobState.Completed, null, ct);
+            await MarkAsync(SyncJobState.Completed, null);
 
             log.LogInformation("Catalog sync complete: {Sets} sets, {Maps} difficulties, {Departed} departed",
                 totalSets, totalMaps, departed);
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // A cancel nearly always lands mid-request or mid-write rather than between
+            // pages, so this, not the check above, is the usual way a run gets paused.
+            await MarkAsync(SyncJobState.Paused, null);
+            log.LogWarning("Catalog sync cancelled — cursor preserved, rerun with --resume");
+        }
         catch (Exception ex)
         {
             log.LogError(ex, "Catalog sync failed");
-            await MarkAsync(SyncJobState.Failed, SyncError.Describe(ex), ct);
+            await MarkAsync(SyncJobState.Failed, SyncError.Describe(ex));
             throw;
         }
     }
@@ -275,10 +295,15 @@ public sealed class CatalogSyncJob(
         return departedMaps;
     }
 
-    private async Task MarkAsync(SyncJobState state, string? error, CancellationToken ct)
+    /// <summary>
+    /// Deliberately not cancellable: this write is what records a cancel. It used to take
+    /// the run's token, which by then was cancelled — so it threw before writing, the job
+    /// sat at Running for good, and Paused was never once recorded.
+    /// </summary>
+    private async Task MarkAsync(SyncJobState state, string? error)
     {
-        await using var db = await dbFactory.CreateDbContextAsync(ct);
-        var j = await db.SyncJobs.FindAsync([JobName], ct);
+        await using var db = await dbFactory.CreateDbContextAsync();
+        var j = await db.SyncJobs.FindAsync([JobName]);
         if (j is null) return;
         j.State = state;
         j.Error = error;
@@ -287,7 +312,7 @@ public sealed class CatalogSyncJob(
             j.LastSuccessAt = DateTimeOffset.UtcNow;
             j.Cursor = null;
         }
-        await db.SaveChangesAsync(ct);
+        await db.SaveChangesAsync();
     }
 
     // ---- JSON helpers ----

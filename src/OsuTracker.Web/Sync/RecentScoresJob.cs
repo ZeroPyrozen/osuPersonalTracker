@@ -27,7 +27,7 @@ public sealed class RecentScoresJob(
 
     public async Task RunAsync(CancellationToken ct)
     {
-        await MarkAsync(SyncJobState.Running, null, ct);
+        await MarkAsync(SyncJobState.Running, null);
 
         var seen = 0; var newPasses = 0; var upgraded = 0; var rejected = 0; var skipped = 0;
 
@@ -56,15 +56,21 @@ public sealed class RecentScoresJob(
                 }
             }
 
-            await MarkAsync(SyncJobState.Completed, null, ct);
+            await MarkAsync(SyncJobState.Completed, null);
             log.LogInformation(
                 "Recent scores: {Seen} seen · {New} new passes · {Upgraded} updated · {Rejected} pre-rank · {Skipped} skipped",
                 seen, newPasses, upgraded, rejected, skipped);
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // Nothing to resume: the next poll re-reads the same 24-hour window.
+            await MarkAsync(SyncJobState.Paused, null);
+            log.LogWarning("Recent scores poll cancelled — the next poll covers the same window");
+        }
         catch (Exception ex)
         {
             log.LogError(ex, "Recent scores poll failed");
-            await MarkAsync(SyncJobState.Failed, SyncError.Describe(ex), ct);
+            await MarkAsync(SyncJobState.Failed, SyncError.Describe(ex));
             throw;
         }
     }
@@ -158,16 +164,17 @@ public sealed class RecentScoresJob(
         return Ingest.Skipped;
     }
 
-    private async Task MarkAsync(SyncJobState state, string? error, CancellationToken ct)
+    /// <summary>Not cancellable, for the same reason as CatalogSyncJob's: it is what records a cancel.</summary>
+    private async Task MarkAsync(SyncJobState state, string? error)
     {
-        await using var db = await dbFactory.CreateDbContextAsync(ct);
-        var j = await db.SyncJobs.FindAsync([JobName], ct);
+        await using var db = await dbFactory.CreateDbContextAsync();
+        var j = await db.SyncJobs.FindAsync([JobName]);
         if (j is null) { j = new SyncJob { Name = JobName }; db.SyncJobs.Add(j); }
         j.State = state;
         j.Error = error;
         j.LastRunAt = DateTimeOffset.UtcNow;
         if (state == SyncJobState.Completed) j.LastSuccessAt = DateTimeOffset.UtcNow;
-        await db.SaveChangesAsync(ct);
+        await db.SaveChangesAsync();
     }
 
     private static string? Str(JsonElement e, string p) =>

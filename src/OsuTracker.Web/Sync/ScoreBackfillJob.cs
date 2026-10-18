@@ -19,6 +19,13 @@ public sealed class ScoreBackfillJob(
 {
     public const string JobName = "ScoreBackfill";
 
+    /// <summary>
+    /// Failures in a row that end the run. One failing map is bad luck; ten in a row is the
+    /// API, the network or the credentials, and pressing on would only skip the rest of the
+    /// queue at full speed and then report the job Completed.
+    /// </summary>
+    private const int MaxConsecutiveErrors = 10;
+
     private static string ModeSlug(GameMode m) => m switch
     {
         GameMode.Osu => "osu",
@@ -54,6 +61,7 @@ public sealed class ScoreBackfillJob(
             cursor > 0 ? $", resuming after beatmap {cursor}" : "");
 
         var done = 0; var passes = 0; var preRank = 0; var noScore = 0; var errors = 0;
+        var consecutiveErrors = 0;
         var startedAt = DateTimeOffset.UtcNow;
 
         try
@@ -66,14 +74,20 @@ public sealed class ScoreBackfillJob(
                 try
                 {
                     outcome = await FetchAndStoreAsync(item, ct);
+                    consecutiveErrors = 0;
+
+                    // Only a map that was actually answered moves the cursor, so a run
+                    // that stops on a streak of failures resumes from before the streak.
+                    cursor = item.BeatmapId;
                 }
                 catch (Exception ex) when (!ct.IsCancellationRequested)
                 {
-                    // A single unlucky map must not end a multi-thousand-map run. The
-                    // cursor still advances; the map simply stays unfetched and will be
-                    // picked up by the next pass, since the queue excludes only maps
-                    // that already have a score row.
+                    // A single unlucky map must not end a multi-thousand-map run. The map
+                    // simply stays unfetched and will be picked up by the next pass, since
+                    // the queue excludes only maps that already have a score row.
                     errors++;
+                    if (++consecutiveErrors >= MaxConsecutiveErrors) throw;
+
                     log.LogWarning("Beatmap {Id} failed ({Kind}: {Message}) — skipping",
                         item.BeatmapId, ex.GetType().Name, ex.Message);
                     outcome = Outcome.None;
@@ -88,7 +102,6 @@ public sealed class ScoreBackfillJob(
                 }
 
                 done++;
-                cursor = item.BeatmapId;
 
                 if (done % 25 == 0 || done == queue.Count)
                 {
@@ -114,20 +127,25 @@ public sealed class ScoreBackfillJob(
 
             if (ct.IsCancellationRequested)
             {
-                await MarkAsync(jobName, SyncJobState.Paused, null, ct);
+                await MarkAsync(jobName, SyncJobState.Paused, null);
                 log.LogWarning("Backfill cancelled after {Done} maps — rerun with --resume", done);
                 return;
             }
 
-            await MarkAsync(jobName, SyncJobState.Completed, null, ct);
+            await MarkAsync(jobName, SyncJobState.Completed, null);
             log.LogInformation(
                 "Backfill complete: {Done} maps · {Passes} qualifying passes · {PreRank} pre-rank only · {NoScore} never passed · {Errors} errors",
                 done, passes, preRank, noScore, errors);
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            await MarkAsync(jobName, SyncJobState.Paused, null);
+            log.LogWarning("Backfill cancelled after {Done} maps — rerun with --resume", done);
+        }
         catch (Exception ex)
         {
             log.LogError(ex, "Backfill failed after {Done} maps", done);
-            await MarkAsync(jobName, SyncJobState.Failed, SyncError.Describe(ex), ct);
+            await MarkAsync(jobName, SyncJobState.Failed, SyncError.Describe(ex));
             throw;
         }
     }
@@ -279,15 +297,16 @@ public sealed class ScoreBackfillJob(
             isLazer);
     }
 
-    private async Task MarkAsync(string jobName, SyncJobState state, string? error, CancellationToken ct)
+    /// <summary>Not cancellable, for the same reason as CatalogSyncJob's: it is what records a cancel.</summary>
+    private async Task MarkAsync(string jobName, SyncJobState state, string? error)
     {
-        await using var db = await dbFactory.CreateDbContextAsync(ct);
-        var j = await db.SyncJobs.FindAsync([jobName], ct);
+        await using var db = await dbFactory.CreateDbContextAsync();
+        var j = await db.SyncJobs.FindAsync([jobName]);
         if (j is null) return;
         j.State = state;
         j.Error = error;
         if (state == SyncJobState.Completed) { j.LastSuccessAt = DateTimeOffset.UtcNow; j.Cursor = null; }
-        await db.SaveChangesAsync(ct);
+        await db.SaveChangesAsync();
     }
 
     private static string? Str(JsonElement e, string p) =>
