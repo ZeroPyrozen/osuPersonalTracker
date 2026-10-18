@@ -140,6 +140,10 @@ Four requests — one per mode — covering the last 24 hours. Once the initial 
 done, this is all you need; put it on a timer and the tracker stays up to date on its
 own. Re-run `sync catalog` every month or so to pick up newly ranked maps.
 
+osu! only ever returns your newest 100 passes per mode, so run it more often than you
+could pass 100 maps in one mode — every few hours is plenty. A pass that falls out of
+that window before a poll sees it is not recorded.
+
 `dotnet run -- sync status` shows job state and current progress without fetching
 anything.
 

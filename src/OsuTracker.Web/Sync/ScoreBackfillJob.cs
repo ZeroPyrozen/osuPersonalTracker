@@ -210,14 +210,20 @@ public sealed class ScoreBackfillJob(
 
         var countsAsPass = qualifying.Count > 0;
 
+        // The row shows the best qualifying score but is dated by the first one. PlayedAt
+        // is what "passed in the last 30 days" counts, and a map cleared years ago and
+        // bettered last week is not progress made last week. Without a qualifying pass the
+        // date only explains the row, so it stays with the score on show.
+        var passedAt = countsAsPass ? qualifying.Min(s => s.PlayedAt) : chosen.PlayedAt;
+
         await using (var db = await dbFactory.CreateDbContextAsync(ct))
         {
             db.Scores.Add(new Score
             {
                 BeatmapId = item.BeatmapId,
                 ScoreId = chosen.ScoreId,
-                PlayedAt = chosen.PlayedAt,
-                PlayedAtUnix = chosen.PlayedAt.ToUnixTimeSeconds(),
+                PlayedAt = passedAt,
+                PlayedAtUnix = passedAt.ToUnixTimeSeconds(),
                 FetchedAt = DateTimeOffset.UtcNow,
                 CountsAsPass = countsAsPass,
                 Grade = chosen.Grade,

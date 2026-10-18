@@ -101,6 +101,43 @@ public sealed partial class ScoreBackfillJobTests
     }
 
     [Fact]
+    public async Task A_map_first_passed_long_ago_is_not_a_recent_pass_however_recently_it_was_bettered()
+    {
+        await using var db = await QueueAsync(1);
+        var firstPassed = DateTimeOffset.UtcNow.AddDays(-300);
+        using var osu = new OsuApiHarness(_ => FakeOsuServer.Json(OsuJson.AllScores(
+            OsuJson.Score(201, 1, firstPassed, accuracy: 0.90),
+            OsuJson.Score(202, 1, DateTimeOffset.UtcNow.AddDays(-2), accuracy: 0.99, rank: "S"))));
+
+        await Job(osu, db).RunAsync(resume: false, onlyMode: null, limit: null, Ct);
+
+        await using var x = db.Context();
+        var row = await x.Scores.SingleAsync(Ct);
+        Assert.Equal((202L, 0.99, "S"), (row.ScoreId, row.Accuracy, row.Grade));
+        Assert.Equal(firstPassed.ToUnixTimeSeconds(), row.PlayedAtUnix);
+        Assert.Equal(0, await new ProgressQueryService(db.Factory).GetRecentPassCountAsync(GameMode.Fruits, 30, Ct));
+    }
+
+    [Fact]
+    public async Task Only_passes_after_the_ranking_qualify_and_the_first_of_them_dates_the_row()
+    {
+        await using var db = await QueueAsync(1);
+        var ranked = Seed.RankedLongAgo;
+        using var osu = new OsuApiHarness(_ => FakeOsuServer.Json(OsuJson.AllScores(
+            OsuJson.Score(301, 1, ranked.AddDays(-10), accuracy: 0.99),   // qualified-era, best overall
+            OsuJson.Score(302, 1, ranked.AddDays(10), accuracy: 0.80),    // first after ranking
+            OsuJson.Score(303, 1, ranked.AddDays(40), accuracy: 0.85))));  // best after ranking
+
+        await Job(osu, db).RunAsync(resume: false, onlyMode: null, limit: null, Ct);
+
+        await using var x = db.Context();
+        var row = await x.Scores.SingleAsync(Ct);
+        Assert.True(row.CountsAsPass);
+        Assert.Equal((303L, 0.85), (row.ScoreId, row.Accuracy));
+        Assert.Equal(ranked.AddDays(10).ToUnixTimeSeconds(), row.PlayedAtUnix);
+    }
+
+    [Fact]
     public async Task A_bare_array_of_scores_is_read_as_well_as_the_envelope()
     {
         await using var db = await QueueAsync(1);

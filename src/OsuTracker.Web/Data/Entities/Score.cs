@@ -13,7 +13,11 @@ public class Score
 
     public long ScoreId { get; set; }
 
-    /// <summary>The load-bearing field. Rule 5 lives here.</summary>
+    /// <summary>
+    /// The load-bearing field. Rule 5 lives here. For a counted pass it is the earliest
+    /// qualifying pass known — when the map was cleared, not when it was last bettered —
+    /// because the 30-day pace counts it. The display fields below show the best run.
+    /// </summary>
     public DateTimeOffset PlayedAt { get; set; }
 
     public DateTimeOffset FetchedAt { get; set; }
