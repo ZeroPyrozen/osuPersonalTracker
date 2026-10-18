@@ -42,7 +42,7 @@ public static class BadgeRenderer
 
         var scope = s.Mode is null ? "ALL MODES" : BadgePalette.ModeName(s.Mode.Value).ToUpperInvariant();
         Text(sb, x0, 40, $"{scope} · RANKED + APPROVED", p.Muted, 10, Mono, spacing: 0.11);
-        Text(sb, x1, 40, $"UPDATED {s.GeneratedAt:yyyy-MM-dd}", p.Muted, 10, Mono, anchor: "end", spacing: 0.08, opacity: 0.8);
+        Text(sb, x1, 40, $"UPDATED {s.UpdatedOn}", p.Muted, 10, Mono, anchor: "end", spacing: 0.08, opacity: 0.8);
 
         // One <text> with two tspans rather than two <text> elements: the suffix has to
         // start immediately after a number whose rendered width is unknown here.

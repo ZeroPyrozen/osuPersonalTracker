@@ -155,7 +155,7 @@ else
                             }
                         </td>
                         <td class="r mono">@N(r.PlayCount)</td>
-                        <td class="r mono dim">@(r.RankedDate?.ToString("yyyy-MM-dd") ?? "—")</td>
+                        <td class="r mono dim">@(r.RankedDate?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) ?? "—")</td>
                     </tr>
                 }
                 @if (_result.Rows.Count == 0)
