@@ -208,6 +208,8 @@ else
     private BrowseFilter _filter = new();
     private BrowseResult? _result;
     private Dictionary<BrowseStatus, int>? _counts;
+    private GameMode? _countsMode;
+    private int _loads;
 
     // What is in the box right now, which is deliberately not what the table shows:
     // the query only moves when the user asks for it.
@@ -239,15 +241,23 @@ else
         // BrowseFilter is a record, so an unrelated re-render costs no queries.
         if (_result is not null && next == _filter) return;
 
-        var modeChanged = _counts is null || next.Mode != _filter.Mode;
         _filter = next;
 
         // The URL is the source of truth, so the box follows it — on a shared link, the
         // back button, or any other filter that rewrites the query string.
         _searchText = _filter.Search ?? string.Empty;
 
-        if (modeChanged) _counts = await Query.GetStatusCountsAsync(_filter.Mode);
-        _result = await Query.QueryAsync(_filter);
+        // Navigation can outrun the queries: a second click lands while the first is still
+        // in flight, and whichever finished last used to win — the previous filter's rows
+        // under the new filter's chips. Only the newest load may publish what it found.
+        var load = ++_loads;
+        var counts = _countsMode == next.Mode ? _counts : await Query.GetStatusCountsAsync(next.Mode);
+        var result = await Query.QueryAsync(next);
+        if (load != _loads) return;
+
+        _counts = counts;
+        _countsMode = next.Mode;
+        _result = result;
 
         // A hand-edited or stale page number lands past the end. Send it to the last real
         // page rather than showing an empty table that reads as a broken filter.

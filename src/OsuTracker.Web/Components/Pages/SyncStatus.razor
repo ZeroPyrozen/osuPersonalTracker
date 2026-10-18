@@ -4,8 +4,10 @@
 @using OsuTracker.Web.OsuApi
 @using System.Globalization
 @using Microsoft.EntityFrameworkCore
+@using Microsoft.Extensions.Options
 @inject IDbContextFactory<TrackerDbContext> DbFactory
 @inject OsuRateLimiter Limiter
+@inject IOptions<OsuApiOptions> ApiOptions
 @rendermode InteractiveServer
 @implements IDisposable
 
@@ -19,12 +21,12 @@
 <div class="panel">
     <div class="panel-title">
         <h2>Rate limit budget</h2>
-        <b>@_permits / 60 available this minute</b>
+        <b>@_permits / @Budget available this minute</b>
     </div>
     <div class="budget">
         @for (var i = 0; i < 20; i++)
         {
-            var filled = i < (int)Math.Round(_permits / 3.0);
+            var filled = i < (int)Math.Round(_permits * 20.0 / Budget);
             <i class="@(filled ? "used" : "")"></i>
         }
     </div>
@@ -98,6 +100,12 @@ dotnet run -- sync recent       # every few hours: keeps everything current</pre
     private CancellationTokenSource? _poll;
 
     private bool AnyRunning => _jobs.Any(j => j.State == SyncJobState.Running);
+
+    /// <summary>
+    /// The configured rate, clamped exactly as OsuRateLimiter clamps it. It was written in
+    /// as 60, so any other OsuApi:RequestsPerMinute showed a budget the limiter never had.
+    /// </summary>
+    private int Budget => Math.Max(1, ApiOptions.Value.RequestsPerMinute);
 
     protected override async Task OnInitializedAsync() => await LoadAsync();
 

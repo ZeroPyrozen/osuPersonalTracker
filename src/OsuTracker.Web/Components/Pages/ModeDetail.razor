@@ -164,6 +164,7 @@ else
     private List<NearlyDoneSet>? _nearly;
     private int _nearlyTotal;
     private bool _loadingMore;
+    private int _loads;
     private int _recentPasses;
     private int _maxBand;
     private string? _wall;
@@ -183,13 +184,23 @@ else
 
         _mode = mode;
 
+        // Loaded into locals and published only by the newest load. Switching modes while
+        // one was in flight let the older load finish last and write what it had already
+        // fetched — its star bands, say — under the newer mode's heading.
+        var load = ++_loads;
         var all = await Progress.GetAllModesAsync();
-        _row = all.First(r => r.Mode == _mode);
-        _bands = await Progress.GetStarBandsAsync(_mode);
-        _nearly = await Progress.GetNearlyDoneAsync(_mode, FirstBatch);
-        _nearlyTotal = await Progress.GetNearlyDoneCountAsync(_mode);
+        var bands = await Progress.GetStarBandsAsync(mode);
+        var nearly = await Progress.GetNearlyDoneAsync(mode, FirstBatch);
+        var nearlyTotal = await Progress.GetNearlyDoneCountAsync(mode);
+        var recentPasses = await Progress.GetRecentPassCountAsync(mode, 30);
+        if (load != _loads) return;
+
+        _row = all.First(r => r.Mode == mode);
+        _bands = bands;
+        _nearly = nearly;
+        _nearlyTotal = nearlyTotal;
         _loadingMore = false;
-        _recentPasses = await Progress.GetRecentPassCountAsync(_mode, 30);
+        _recentPasses = recentPasses;
 
         _maxBand = _bands.Count == 0 ? 0 : _bands.Max(b => b.Total);
         _wall = FindWall(_bands);
@@ -206,16 +217,25 @@ else
         if (_nearly is null || _loadingMore) return;
 
         _loadingMore = true;
+        var load = _loads;
+        var list = _nearly;
         try
         {
-            var next = await Progress.GetNearlyDoneAsync(_mode, MoreBatch, _nearly.Count);
-            _nearly.AddRange(next);
+            var next = await Progress.GetNearlyDoneAsync(_mode, MoreBatch, list.Count);
+
+            // A mode switch while this was in flight has replaced the list: these sets
+            // belong to the mode that was showing when the button was pressed.
+            if (load != _loads) return;
+            list.AddRange(next);
 
             // A sync between page load and this click can shrink the list under us.
             // Believe the empty page rather than leaving a button that fetches nothing.
-            if (next.Count == 0) _nearlyTotal = _nearly.Count;
+            if (next.Count == 0) _nearlyTotal = list.Count;
         }
-        finally { _loadingMore = false; }
+        finally
+        {
+            if (load == _loads) _loadingMore = false;
+        }
     }
 
     private double PerWeek => _recentPasses / (30 / 7.0);

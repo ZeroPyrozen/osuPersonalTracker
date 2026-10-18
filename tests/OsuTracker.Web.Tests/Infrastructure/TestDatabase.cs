@@ -13,11 +13,14 @@ public sealed class TestDatabase : IAsyncDisposable
 {
     private readonly string _dir;
 
-    private TestDatabase(string dir, IDbContextFactory<TrackerDbContext> factory)
+    private TestDatabase(string dir, DbContextOptions<TrackerDbContext> options)
     {
         _dir = dir;
-        Factory = factory;
+        Options = options;
+        Factory = new SimpleFactory(options);
     }
+
+    public DbContextOptions<TrackerDbContext> Options { get; }
 
     public IDbContextFactory<TrackerDbContext> Factory { get; }
 
@@ -30,11 +33,10 @@ public sealed class TestDatabase : IAsyncDisposable
             .UseSqlite($"Data Source={Path.Combine(dir, "tracker.db")};Pooling=False")
             .Options;
 
-        var factory = new SimpleFactory(options);
-        await using (var db = factory.CreateDbContext())
+        await using (var db = new TrackerDbContext(options))
             await db.Database.MigrateAsync();
 
-        return new TestDatabase(dir, factory);
+        return new TestDatabase(dir, options);
     }
 
     public TrackerDbContext Context() => Factory.CreateDbContext();
