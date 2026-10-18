@@ -64,6 +64,9 @@ public sealed class PlayCountSyncJob(
                 var rows = new List<(long BeatmapId, int Count)>(n);
                 foreach (var row in arr.EnumerateArray())
                 {
+                    // TryGetProperty below throws on anything but an object.
+                    if (row.ValueKind != JsonValueKind.Object) continue;
+
                     var id = GetLong(row, "beatmap_id")
                              ?? (row.TryGetProperty("beatmap", out var bm) ? GetLong(bm, "id") : null);
                     if (id is null) continue;

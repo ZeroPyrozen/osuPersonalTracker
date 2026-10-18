@@ -1,3 +1,4 @@
+using System.Net;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using OsuTracker.Web.Data;
@@ -86,11 +87,20 @@ public sealed class CatalogSyncJob(
                 while (!ct.IsCancellationRequested)
                 {
                     var url = $"/beatmapsets/search?s={query}" + (cursor is null ? "" : $"&cursor_string={Uri.EscapeDataString(cursor)}");
-                    using var doc = await api.GetAsync(url, ct);
-                    if (doc is null) break;
+
+                    // The catalogue ends at a null cursor or an empty page, and nowhere else.
+                    // A 404 or a page of the wrong shape used to end it too — and then the
+                    // reconcile below marked everything not yet reached as departed, which on
+                    // page one is the entire catalogue. Those fail the run instead.
+                    using var doc = await api.GetAsync(url, ct)
+                        ?? throw new HttpRequestException("Catalogue search returned 404.", null, HttpStatusCode.NotFound);
 
                     var root = doc.RootElement;
-                    if (!root.TryGetProperty("beatmapsets", out var sets) || sets.ValueKind != JsonValueKind.Array) break;
+                    if (root.ValueKind != JsonValueKind.Object
+                        || !root.TryGetProperty("beatmapsets", out var sets)
+                        || sets.ValueKind != JsonValueKind.Array)
+                        throw new JsonException("Catalogue search response had no beatmapsets array.");
+
                     var count = sets.GetArrayLength();
                     if (count == 0) break;
 

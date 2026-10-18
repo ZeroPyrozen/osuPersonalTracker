@@ -236,15 +236,20 @@ public sealed class ScoreBackfillJob(
         long ScoreId, DateTimeOffset PlayedAt, string? Grade, double Accuracy,
         int? MaxCombo, string? Mods, bool IsLazer);
 
-    /// <summary>Handles both the /all envelope and a bare single-score response.</summary>
+    /// <summary>
+    /// Handles the /all envelope, a bare array, and a bare single-score response. The kind
+    /// is checked before every TryGetProperty: on anything but an object it throws rather
+    /// than returning false, which left the array branch unreachable.
+    /// </summary>
     private static List<ParsedScore> ExtractScores(JsonElement root)
     {
         var result = new List<ParsedScore>();
+        var isObject = root.ValueKind == JsonValueKind.Object;
 
         JsonElement arr;
-        if (root.TryGetProperty("scores", out var s) && s.ValueKind == JsonValueKind.Array) arr = s;
+        if (isObject && root.TryGetProperty("scores", out var s) && s.ValueKind == JsonValueKind.Array) arr = s;
         else if (root.ValueKind == JsonValueKind.Array) arr = root;
-        else if (root.TryGetProperty("score", out var one) && one.ValueKind == JsonValueKind.Object)
+        else if (isObject && root.TryGetProperty("score", out var one) && one.ValueKind == JsonValueKind.Object)
         {
             var p = ParseOne(one);
             if (p is not null) result.Add(p);

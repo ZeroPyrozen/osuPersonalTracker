@@ -79,6 +79,10 @@ public sealed class RecentScoresJob(
 
     private async Task<Ingest> IngestAsync(JsonElement e, GameMode requestedMode, CancellationToken ct)
     {
+        // TryGetProperty throws on anything but an object, so without this one malformed
+        // element failed the poll for every score after it.
+        if (e.ValueKind != JsonValueKind.Object) return Ingest.Skipped;
+
         // A failed run is not a pass. include_fails=1 is on so we can count the play,
         // but only a completed run may produce a Score row.
         if (e.TryGetProperty("passed", out var passed) && passed.ValueKind == JsonValueKind.False)

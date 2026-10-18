@@ -101,6 +101,19 @@ public sealed partial class ScoreBackfillJobTests
     }
 
     [Fact]
+    public async Task A_bare_array_of_scores_is_read_as_well_as_the_envelope()
+    {
+        await using var db = await QueueAsync(1);
+        using var osu = new OsuApiHarness(r => FakeOsuServer.Json(
+            OsuJson.Array(OsuJson.Score(100, BeatmapOf(r), DateTimeOffset.UtcNow.AddDays(-400)))));
+
+        await Job(osu, db).RunAsync(resume: false, onlyMode: null, limit: null, Ct);
+
+        await using var x = db.Context();
+        Assert.True((await x.Scores.SingleAsync(Ct)).CountsAsPass);
+    }
+
+    [Fact]
     public async Task Cancelling_mid_request_leaves_the_job_paused()
     {
         await using var db = await QueueAsync(5);

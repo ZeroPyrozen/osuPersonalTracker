@@ -142,6 +142,47 @@ public sealed class CatalogSyncJobTests
         Assert.Equal("ranked|c1", job.Cursor);
     }
 
+    [Theory]
+    [InlineData(HttpStatusCode.NotFound, "", "osu! API returned 404")]
+    [InlineData(HttpStatusCode.OK, "{}", "unexpected response shape from the osu! API")]
+    [InlineData(HttpStatusCode.OK, "[]", "unexpected response shape from the osu! API")]
+    [InlineData(HttpStatusCode.OK, """{"beatmapsets":{}}""", "unexpected response shape from the osu! API")]
+    public async Task A_page_that_is_not_a_page_fails_the_run_instead_of_ending_the_catalogue(
+        HttpStatusCode status, string body, string error)
+    {
+        await using var db = await TestDatabase.CreateAsync();
+        await SeedPreviousSweepAsync(db);
+        using var osu = new OsuApiHarness(r =>
+            HttpUtility.ParseQueryString(r.RequestUri!.Query)["cursor_string"] == "c1"
+                ? FakeOsuServer.Json(body, status)
+                : Catalogue(r));
+
+        await Assert.ThrowsAnyAsync<Exception>(() => Job(osu, db).RunAsync(resume: false, Ct));
+
+        await using var x = db.Context();
+        Assert.Equal(0, await x.Beatmaps.CountAsync(b => b.Status == BeatmapStatus.Departed, Ct));
+        var job = await db.JobAsync(CatalogSyncJob.JobName);
+        Assert.Equal(SyncJobState.Failed, job!.State);
+        Assert.Equal(error, job.Error);
+        Assert.Equal("ranked|c1", job.Cursor);
+    }
+
+    [Fact]
+    public async Task An_empty_page_still_ends_the_sweep_normally()
+    {
+        await using var db = await TestDatabase.CreateAsync();
+        // A catalogue that is an exact multiple of the page size ends with an empty page
+        // that still carried a cursor on the page before it.
+        using var osu = new OsuApiHarness(r =>
+            HttpUtility.ParseQueryString(r.RequestUri!.Query)["cursor_string"] is null
+                ? FakeOsuServer.Json(OsuJson.SearchPage("c1", OsuJson.Set(1, [11])))
+                : FakeOsuServer.Json(OsuJson.SearchPage(null)));
+
+        await Job(osu, db).RunAsync(resume: false, Ct);
+
+        Assert.Equal(SyncJobState.Completed, (await db.JobAsync(CatalogSyncJob.JobName))!.State);
+    }
+
     [Fact]
     public async Task A_failure_is_recorded_without_its_details_and_keeps_the_cursor()
     {

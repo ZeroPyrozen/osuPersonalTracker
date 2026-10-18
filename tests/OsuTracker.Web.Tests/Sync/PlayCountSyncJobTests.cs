@@ -49,6 +49,19 @@ public sealed class PlayCountSyncJobTests
     }
 
     [Fact]
+    public async Task A_row_that_is_not_an_object_is_skipped_rather_than_failing_the_sync()
+    {
+        await using var db = await CatalogueAsync();
+        using var osu = new OsuApiHarness(_ => FakeOsuServer.Json("""[42, null, {"beatmap_id":7,"count":3}]"""));
+
+        await Job(osu, db).RunAsync(resume: false, Ct);
+
+        await using var x = db.Context();
+        Assert.Equal(7L, Assert.Single(await x.PlayCounts.ToListAsync(Ct)).BeatmapId);
+        Assert.Equal(SyncJobState.Completed, (await db.JobAsync(PlayCountSyncJob.JobName))!.State);
+    }
+
+    [Fact]
     public async Task Cancelling_mid_request_leaves_the_job_paused_at_its_offset()
     {
         await using var db = await CatalogueAsync();
