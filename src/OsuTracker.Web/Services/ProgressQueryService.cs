@@ -29,9 +29,22 @@ public sealed class ProgressQueryService(IDbContextFactory<TrackerDbContext> dbF
     }
 
     /// <summary>
+    /// The Attempted rung — played, and not passed — defined here once, in the same terms
+    /// as Browse's filter. It has to be counted directly rather than as "played minus
+    /// passed": that subtraction assumes every pass was also played, and a pass that
+    /// `sync recent` records on a map you had never loaded before has no playcount row
+    /// until the next playcount sync. Each one moved a map from Attempted to Untouched,
+    /// more of them every day the tracker ran, and the chips stopped matching the lists.
+    /// </summary>
+    public static IQueryable<Beatmap> Attempted(TrackerDbContext db, GameMode? mode = null) =>
+        Counted(db, mode).Where(b =>
+            db.PlayCounts.Any(p => p.BeatmapId == b.Id && p.Count > 0)
+            && !db.Scores.Any(s => s.BeatmapId == b.Id && s.CountsAsPass));
+
+    /// <summary>
     /// Three simple aggregates rather than one clever query. A single grouped join with
     /// correlated subqueries per row does not translate, and even where it does it is far
-    /// harder to verify than counting totals, passes and plays separately.
+    /// harder to verify than counting totals, passes and attempts separately.
     /// </summary>
     public async Task<List<ModeProgress>> GetAllModesAsync(CancellationToken ct = default)
     {
@@ -52,26 +65,20 @@ public sealed class ProgressQueryService(IDbContextFactory<TrackerDbContext> dbF
             select new { Mode = g.Key, C = g.Count() })
             .ToDictionaryAsync(x => x.Mode, x => x.C, ct);
 
-        var played = await (
-            from b in Counted(db)
-            join p in db.PlayCounts on b.Id equals p.BeatmapId
-            where p.Count > 0
-            group b by b.Mode into g
-            select new { Mode = g.Key, C = g.Count() })
+        var attempted = await Attempted(db)
+            .GroupBy(b => b.Mode)
+            .Select(g => new { Mode = g.Key, C = g.Count() })
             .ToDictionaryAsync(x => x.Mode, x => x.C, ct);
 
         return Enum.GetValues<GameMode>().Select(m =>
         {
             var total = totals.GetValueOrDefault(m);
             var p = passed.GetValueOrDefault(m);
-            var pl = played.GetValueOrDefault(m);
+            var a = attempted.GetValueOrDefault(m);
 
-            // A pass implies a play, so attempted is the remainder — but clamp rather
-            // than trust it: a score whose beatmap never appeared in most_played would
-            // otherwise produce a negative count and a quietly wrong total.
-            var attempted = Math.Max(0, pl - p);
-            var untouched = Math.Max(0, total - p - attempted);
-            return new ModeProgress(m, total, p, attempted, untouched);
+            // Passed and Attempted are disjoint subsets of the total, so this cannot go
+            // negative — no clamp, which would only hide it if that ever stopped being true.
+            return new ModeProgress(m, total, p, a, total - p - a);
         }).ToList();
     }
 
@@ -105,19 +112,17 @@ public sealed class ProgressQueryService(IDbContextFactory<TrackerDbContext> dbF
                             select new { Band = g.Key, C = g.Count() })
                             .ToDictionaryAsync(x => x.Band, x => x.C, ct);
 
-        var played = await (from b in Counted(db, mode)
-                            join p in db.PlayCounts on b.Id equals p.BeatmapId
-                            where p.Count > 0
-                            group b by b.StarRating < 2 ? 0 : b.StarRating < 3 ? 1 : b.StarRating < 4 ? 2 : b.StarRating < 5 ? 3 : b.StarRating < 6 ? 4 : b.StarRating < 7 ? 5 : 6 into g
-                            select new { Band = g.Key, C = g.Count() })
-                            .ToDictionaryAsync(x => x.Band, x => x.C, ct);
+        var attempted = await Attempted(db, mode)
+            .GroupBy(b => b.StarRating < 2 ? 0 : b.StarRating < 3 ? 1 : b.StarRating < 4 ? 2 : b.StarRating < 5 ? 3 : b.StarRating < 6 ? 4 : b.StarRating < 7 ? 5 : 6)
+            .Select(g => new { Band = g.Key, C = g.Count() })
+            .ToDictionaryAsync(x => x.Band, x => x.C, ct);
 
         return BandLabels.Select((label, i) =>
         {
             var total = totals.GetValueOrDefault(i);
             var p = passed.GetValueOrDefault(i);
-            var attempted = Math.Max(0, played.GetValueOrDefault(i) - p);
-            return new StarBand(label, total, p, attempted, Math.Max(0, total - p - attempted));
+            var a = attempted.GetValueOrDefault(i);
+            return new StarBand(label, total, p, a, total - p - a);
         }).ToList();
     }
 

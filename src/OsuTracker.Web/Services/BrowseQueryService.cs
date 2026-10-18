@@ -217,12 +217,8 @@ public sealed class BrowseQueryService(IDbContextFactory<TrackerDbContext> dbFac
                              where !s.CountsAsPass
                              select b.Id).CountAsync(ct);
 
-        var played = await (from b in ProgressQueryService.Counted(db, mode)
-                            join p in db.PlayCounts on b.Id equals p.BeatmapId
-                            where p.Count > 0
-                            select b.Id).CountAsync(ct);
-
-        var attempted = Math.Max(0, played - passed);
+        // The ladder's own definition, so a chip cannot drift from the list it opens.
+        var attempted = await ProgressQueryService.Attempted(db, mode).CountAsync(ct);
 
         return new Dictionary<BrowseStatus, int>
         {
@@ -230,7 +226,7 @@ public sealed class BrowseQueryService(IDbContextFactory<TrackerDbContext> dbFac
             [BrowseStatus.Passed] = passed,
             [BrowseStatus.Attempted] = attempted,
             [BrowseStatus.PreRankOnly] = preRank,
-            [BrowseStatus.Untouched] = Math.Max(0, total - passed - attempted)
+            [BrowseStatus.Untouched] = total - passed - attempted
         };
     }
 }

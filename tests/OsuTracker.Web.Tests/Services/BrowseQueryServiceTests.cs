@@ -79,6 +79,33 @@ public sealed class BrowseQueryServiceTests
     }
 
     [Fact]
+    public async Task Each_status_chip_counts_exactly_the_rows_its_filter_shows()
+    {
+        await using var db = await ProgressQueryServiceTests.LadderAsync();
+        var browse = new BrowseQueryService(db.Factory);
+
+        var chips = await browse.GetStatusCountsAsync(GameMode.Fruits, Ct);
+
+        foreach (var status in Enum.GetValues<BrowseStatus>())
+        {
+            var list = await browse.QueryAsync(new BrowseFilter { Mode = GameMode.Fruits, Status = status }, Ct);
+            Assert.True(chips[status] == list.Total, $"{status}: chip says {chips[status]}, list shows {list.Total}");
+        }
+    }
+
+    [Fact]
+    public async Task The_chips_agree_with_the_ladder()
+    {
+        await using var db = await ProgressQueryServiceTests.LadderAsync();
+
+        var chips = await new BrowseQueryService(db.Factory).GetStatusCountsAsync(GameMode.Fruits, Ct);
+        var row = (await new ProgressQueryService(db.Factory).GetAllModesAsync(Ct)).Single(r => r.Mode == GameMode.Fruits);
+
+        Assert.Equal((row.Passed, row.Attempted, row.Untouched),
+            (chips[BrowseStatus.Passed], chips[BrowseStatus.Attempted], chips[BrowseStatus.Untouched]));
+    }
+
+    [Fact]
     public async Task Ordinary_searches_still_filter()
     {
         await using var db = await CatalogueAsync();
