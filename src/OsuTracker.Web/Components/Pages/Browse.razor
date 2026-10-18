@@ -44,7 +44,7 @@
     </select>
 
     <input class="f f-search" type="search" aria-label="Search beatmaps"
-           placeholder="@Placeholder"
+           placeholder="@Placeholder" maxlength="@BrowseSearch.MaxLength"
            value="@_searchText"
            @oninput="e => _searchText = e.Value?.ToString() ?? string.Empty"
            @onkeydown="OnSearchKey" />
@@ -231,8 +231,9 @@ else
             Status = ParseStatus(StatusQuery),
             Sort = ParseSort(SortQuery),
             Search = string.IsNullOrWhiteSpace(SearchQuery) ? null : SearchQuery.Trim(),
-            // 1-based in the URL, because that is the number the pager shows.
-            Page = Math.Max(0, (PageQuery ?? 1) - 1)
+            // 1-based in the URL, because that is the number the pager shows. Tested before
+            // subtracting, so page=-2147483648 cannot wrap round to the largest page there is.
+            Page = PageQuery is int p and > 0 ? p - 1 : 0
         };
 
         // BrowseFilter is a record, so an unrelated re-render costs no queries.

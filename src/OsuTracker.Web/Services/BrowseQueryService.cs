@@ -151,7 +151,10 @@ public sealed class BrowseQueryService(IDbContextFactory<TrackerDbContext> dbFac
             _ => q.OrderBy(x => x.StarRating).ThenBy(x => x.Id)
         };
 
-        var page = Math.Max(0, f.Page);
+        // Clamped so the offset cannot overflow. Page 50,000,000 used to wrap negative, which
+        // SQLite reads as zero — page one, served under a page number nobody asked for, so
+        // the redirect for pages past the end never fired.
+        var page = Math.Clamp(f.Page, 0, int.MaxValue / Math.Max(1, f.PageSize));
         var rows = await q.Skip(page * f.PageSize).Take(f.PageSize).ToListAsync(ct);
 
         return new BrowseResult(
