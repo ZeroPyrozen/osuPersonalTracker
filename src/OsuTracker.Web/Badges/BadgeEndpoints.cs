@@ -146,7 +146,14 @@ public static class BadgeEndpoints
         // some other page refuses to paint the image it just downloaded.
         ctx.Response.Headers.AccessControlAllowOrigin = "*";
 
-        if (ctx.Request.Headers.IfNoneMatch.Any(v => v == etag))
+        // Opened directly, the SVG is a document on this origin, built from query-string
+        // input. It needs nothing beyond its own markup, so it is allowed nothing — no
+        // script, no fetch, no stylesheet — even if a later change ever let unescaped input
+        // in. An <img> never runs script anyway; this covers the badge opened as a page.
+        ctx.Response.Headers.ContentSecurityPolicy = "default-src 'none'";
+        ctx.Response.Headers.XContentTypeOptions = "nosniff";
+
+        if (IsNotModified(ctx.Request, etag))
             return Results.StatusCode(StatusCodes.Status304NotModified);
 
         var (svg, width, height) = BadgeRenderer.Render(snap, options);
@@ -168,6 +175,21 @@ public static class BadgeEndpoints
                 $"attachment; filename=osu-tracker-{options.ModeSlug}-{options.Layout.ToString().ToLowerInvariant()}.png";
 
         return Results.File(bytes, MediaTypeNames.Image.Png);
+    }
+
+    /// <summary>
+    /// If-None-Match as RFC 9110 reads it: "*", or a list of tags compared weakly. The raw
+    /// header used to be compared with our tag verbatim, which missed all three of a tag
+    /// weakened to W/"…" by a compressing proxy, several tags on one line, and "*" — and
+    /// each of those revalidations got the whole badge back instead of a 304.
+    /// </summary>
+    private static bool IsNotModified(HttpRequest request, string etag)
+    {
+        var tags = request.GetTypedHeaders().IfNoneMatch;
+        if (tags.Count == 0) return false;
+
+        var ours = EntityTagHeaderValue.Parse(etag);
+        return tags.Any(t => t.Equals(EntityTagHeaderValue.Any) || t.Compare(ours, useStrongComparison: false));
     }
 
     /// <summary>Above 4x a banner is 3520px wide, which no profile page wants.</summary>
