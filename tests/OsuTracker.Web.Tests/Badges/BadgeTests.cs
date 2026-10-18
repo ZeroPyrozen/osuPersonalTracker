@@ -88,6 +88,25 @@ public sealed class BadgeTests
     }
 
     [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    public void The_png_is_a_real_raster_at_the_requested_scale(int scale)
+    {
+        // A failed rasterise is swallowed and the .png URL quietly serves SVG instead —
+        // which is exactly what osu!'s raster-only image proxy cannot show. A managed and
+        // native SkiaSharp that drift apart fail that way, so pin that it really works.
+        var (svg, width, height) = BadgeRenderer.Render(Snapshot(DateTimeOffset.UtcNow), Banner);
+
+        var png = BadgeRasterizer.ToPng($"test-{Guid.NewGuid():N}", svg, width, height, scale);
+
+        Assert.True(png.Length > 1000, $"rasterising produced {png.Length} bytes");
+        Assert.Equal([0x89, (byte)'P', (byte)'N', (byte)'G'], png[..4]);
+        // IHDR: width and height, big-endian, at bytes 16..23.
+        Assert.Equal(width * scale, System.Buffers.Binary.BinaryPrimitives.ReadInt32BigEndian(png.AsSpan(16, 4)));
+        Assert.Equal(height * scale, System.Buffers.Binary.BinaryPrimitives.ReadInt32BigEndian(png.AsSpan(20, 4)));
+    }
+
+    [Theory]
     [InlineData("\"/><script>alert(1)</script>")]
     [InlineData("url(javascript:alert(1))")]
     [InlineData("#12345g")]
