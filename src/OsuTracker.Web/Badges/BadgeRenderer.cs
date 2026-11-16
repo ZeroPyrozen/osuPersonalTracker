@@ -44,7 +44,7 @@ public static class BadgeRenderer
 
         var scope = s.Mode is null ? "All modes" : BadgePalette.ModeName(s.Mode.Value);
         Text(sb, x0, 40, $"{scope} · ranked and approved", p.Muted, 12, Display);
-        Text(sb, x1, 40, $"Updated {s.UpdatedOn}", p.Muted, 11, Mono, anchor: "end");
+        Text(sb, x1, 40, s.UpdatedOn is null ? "Not synced yet" : $"Updated {s.UpdatedOn}", p.Muted, 11, Mono, anchor: "end");
 
         // One <text> with two tspans rather than two <text> elements: the suffix has to
         // start immediately after a number whose rendered width is unknown here.

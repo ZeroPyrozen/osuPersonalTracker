@@ -138,6 +138,18 @@ public sealed class ProgressQueryService(IDbContextFactory<TrackerDbContext> dbF
     // factored into a helper: EF cannot translate a method call, and calling one here
     // throws at runtime rather than at compile time. Verbose beats broken.
 
+    /// <summary>
+    /// When any sync job last completed — the honest answer to "how current is this".
+    /// Compared in memory: the SQLite provider cannot aggregate a DateTimeOffset, and
+    /// there are only ever a handful of job rows.
+    /// </summary>
+    public async Task<DateTimeOffset?> GetLastSyncAsync(CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        var times = await db.SyncJobs.Where(j => j.LastSuccessAt != null).Select(j => j.LastSuccessAt).ToListAsync(ct);
+        return times.Count == 0 ? null : times.Max();
+    }
+
     /// <summary>Qualifying passes dated within the window — drives the pace projection.</summary>
     public async Task<int> GetRecentPassCountAsync(GameMode mode, int days, CancellationToken ct = default)
     {

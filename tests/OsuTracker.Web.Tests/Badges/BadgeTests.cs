@@ -14,7 +14,8 @@ public sealed class BadgeTests
         UserId: 4242, Mode: null, Total: 100, Passed: 40, Attempted: 10, Untouched: 50, RecentPasses: 3,
         Modes: [new ModeProgress(GameMode.Fruits, 100, 40, 10, 50)],
         Bands: [],
-        GeneratedAt: at);
+        GeneratedAt: at,
+        LastSyncedAt: at);
 
     [Fact]
     public void The_etag_holds_through_the_day_so_an_unchanged_badge_stays_cached()

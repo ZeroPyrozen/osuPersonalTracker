@@ -24,9 +24,9 @@ public static class SyncCommands
             || !TryFlag(args, "--mode", ParseMode, out var onlyMode))
             return 2;
 
-        if (command is "catalog" or "playcounts" or "scores" or "recent"
+        if (command is "catalog" or "catalog-new" or "playcounts" or "scores" or "recent" or "daily"
             && ConfigProblem(services.GetRequiredService<IOptions<OsuApiOptions>>().Value,
-                             needsUser: command != "catalog") is { } problem)
+                             needsUser: command is not ("catalog" or "catalog-new")) is { } problem)
         {
             Console.Error.WriteLine(problem);
             return 2;
@@ -60,6 +60,21 @@ public static class SyncCommands
                     await PrintProgressAsync(services, ct);
                     return 0;
 
+                case "catalog-new":
+                    await services.GetRequiredService<CatalogSyncJob>().RunNewestAsync(maxPages ?? CatalogSyncJob.TopUpPages, ct);
+                    await PrintDenominatorsAsync(services, ct);
+                    return 0;
+
+                // The order is the point: a newly ranked map has to be in the catalogue
+                // before its playcount can match, and the playcount has to be current
+                // before the re-check can tell which maps were played since it last looked.
+                case "daily":
+                    await services.GetRequiredService<CatalogSyncJob>().RunNewestAsync(maxPages ?? CatalogSyncJob.TopUpPages, ct);
+                    await services.GetRequiredService<PlayCountSyncJob>().RunAsync(resume: false, ct);
+                    await services.GetRequiredService<ScoreBackfillJob>().RunAsync(resume: false, onlyMode: null, limit, ct);
+                    await PrintProgressAsync(services, ct);
+                    return 0;
+
                 case "status":
                     await PrintStatusAsync(services, ct);
                     return 0;
@@ -70,11 +85,16 @@ public static class SyncCommands
 
                       catalog     Sweep ranked + approved and fill Beatmapset / Beatmap.
                                   --resume continues from the stored cursor after a crash.
+                      catalog-new Fetch only the newest ranked sets (--max-pages N, default 5), so
+                                  maps ranked since the last full sweep are counted.
                       playcounts  Page most_played and fill PlayCount. Defines the backfill queue.
                       recent      Poll the 24h window for each mode. 4 requests; run this on a
                                   timer once backfill is done and the tracker stays current.
-                      scores      Backfill scores over the queue. --mode <osu|taiko|catch|mania>
+                      scores      Fetch scores for every played, unpassed map whose playcount has
+                                  risen since it was last checked. --mode <osu|taiko|catch|mania>
                                   narrows it, --limit N caps it, --resume continues.
+                      daily       catalog-new, then playcounts, then scores. Run it once a day:
+                                  it picks up any pass the recent poll missed.
                       status      Show job state, denominators and current progress.
                     """);
                     return 2;
@@ -86,6 +106,15 @@ public static class SyncCommands
             // ending Ctrl+C in a stack trace, and saying so in the exit code shells expect.
             Console.WriteLine("Cancelled — progress is saved; rerun with --resume to continue.");
             return 130;
+        }
+        catch (Exception ex)
+        {
+            // A failed job has already logged its exception and recorded itself as Failed.
+            // Letting it escape Main as well bought nothing but a second stack trace and an
+            // abort (exit 134) that reads like a crash of the runtime rather than a refused
+            // request. One line and a plain failure code is what a timer needs to see.
+            Console.Error.WriteLine($"Sync failed: {ex.GetType().Name}: {ex.Message}");
+            return 1;
         }
     }
 
