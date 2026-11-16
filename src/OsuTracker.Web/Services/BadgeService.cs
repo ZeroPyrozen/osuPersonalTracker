@@ -32,7 +32,7 @@ public sealed record BadgeSnapshot(
 
     /// <summary>
     /// Only what is drawn goes in, so an ETag survives an unrelated sync but changes the
-    /// moment a badge would actually look different. That includes the UPDATED date: it
+    /// moment a badge would actually look different. That includes the Updated date: it
     /// was left out, so one strong ETag stood for a different SVG every day, and the PNG
     /// cache, keyed on it, kept serving the first day's raster.
     /// </summary>
@@ -59,7 +59,7 @@ public sealed class BadgeService(ProgressQueryService progress, IOptions<OsuApiO
     private static int Key(GameMode? mode) => mode is null ? -1 : (int)mode.Value;
 
     /// <summary>Rendering version — bump it when the SVG changes, so cached ETags miss.</summary>
-    public const string RenderVersion = "1";
+    public const string RenderVersion = "2";
 
     public async Task<BadgeSnapshot> GetSnapshotAsync(GameMode? mode, bool force = false, CancellationToken ct = default)
     {

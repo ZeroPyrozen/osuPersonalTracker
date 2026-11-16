@@ -244,7 +244,9 @@
         if (_accent is not null) parts.Add($"accent={_accent}");
         if (scale > 0 && scale != 2) parts.Add($"scale={scale}");
         if (download) parts.Add("download=1");
-        if (withNonce) parts.Add($"v={_nonce}");
+        // The render version rides along so a redeployed renderer is never hidden behind
+        // an image the browser cached from the last session at the same v=0.
+        if (withNonce) parts.Add($"v={BadgeService.RenderVersion}.{_nonce}");
         return parts.Count == 0 ? "" : "?" + string.Join("&", parts);
     }
 

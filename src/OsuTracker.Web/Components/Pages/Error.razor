@@ -1,28 +1,33 @@
 ﻿@page "/Error"
 @using System.Diagnostics
 
-<PageTitle>Error</PageTitle>
+<PageTitle>Error · osu!PersonalTracker</PageTitle>
 
-<h1 class="text-danger">Error.</h1>
-<h2 class="text-danger">An error occurred while processing your request.</h2>
+<div class="mode-head">
+    <h1 class="mode-title" tabindex="-1">Something went wrong</h1>
+    <span class="mode-sub">the request failed before the page could render</span>
+</div>
 
-@if (ShowRequestId)
-{
-    <p>
-        <strong>Request ID:</strong> <code>@RequestId</code>
+<div class="panel">
+    <div class="panel-title">
+        <h2>What to try</h2>
+        @if (ShowRequestId)
+        {
+            <b>request @RequestId</b>
+        }
+    </div>
+
+    <p class="pace-none">
+        Reload the page. If it fails again, the server log has the exception under the request
+        ID above. Running with <b>ASPNETCORE_ENVIRONMENT=Development</b> shows it here instead,
+        which is fine on this machine and never on a public address.
     </p>
-}
 
-<h3>Development Mode</h3>
-<p>
-    Swapping to <strong>Development</strong> environment will display more detailed information about the error that occurred.
-</p>
-<p>
-    <strong>The Development environment shouldn't be enabled for deployed applications.</strong>
-    It can result in displaying sensitive information from exceptions to end users.
-    For local debugging, enable the <strong>Development</strong> environment by setting the <strong>ASPNETCORE_ENVIRONMENT</strong> environment variable to <strong>Development</strong>
-    and restarting the app.
-</p>
+    <div class="filters" style="margin-top: 16px">
+        <a class="f on" style="--mc: var(--osu)" href="">dashboard</a>
+        <a class="f" href="sync">sync</a>
+    </div>
+</div>
 
 @code{
     [CascadingParameter]
