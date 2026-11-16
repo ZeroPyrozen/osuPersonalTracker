@@ -29,7 +29,7 @@ public sealed class BadgeTests
     [Fact]
     public void The_etag_changes_with_the_date_the_banner_draws()
     {
-        // Same numbers, different UPDATED line: a strong ETag has to tell them apart, and
+        // Same numbers, different Updated line: a strong ETag has to tell them apart, and
         // the PNG cache is keyed on it, so otherwise the first day's raster is served on.
         var day = new DateTimeOffset(2026, 10, 18, 12, 0, 0, TimeSpan.Zero);
         var (svg1, _, _) = BadgeRenderer.Render(Snapshot(day), Banner);
@@ -57,7 +57,7 @@ public sealed class BadgeTests
             CultureInfo.CurrentCulture = new CultureInfo(culture);
             var (svg, _, _) = BadgeRenderer.Render(Snapshot(at), Banner);
 
-            Assert.Contains("UPDATED 2026-10-18", svg);
+            Assert.Contains("Updated 2026-10-18", svg);
             Assert.Equal(expected, svg);
         }
         finally

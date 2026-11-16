@@ -15,7 +15,9 @@ namespace OsuTracker.Web.Badges;
 /// </summary>
 public static class BadgeRenderer
 {
-    private const string Display = "'Trebuchet MS','Segoe UI',Verdana,system-ui,sans-serif";
+    // Segoe UI on Windows, Helvetica on a Mac, DejaVu where the PNG is rasterised on the
+    // Pi. Trebuchet's rounded, slanting forms fought the app's own Hanken Grotesk.
+    private const string Display = "'Segoe UI','Helvetica Neue',Arial,'DejaVu Sans',sans-serif";
     private const string Mono = "'Cascadia Mono',Consolas,'DejaVu Sans Mono',monospace";
 
     public static (string Svg, int Width, int Height) Render(BadgeSnapshot s, BadgeOptions o) =>
@@ -29,28 +31,28 @@ public static class BadgeRenderer
         var p = BadgePalette.For(o.Theme);
         var sb = new StringBuilder(4096);
 
-        Open(sb, w, h, p, o, 14);
+        Open(sb, w, h, p, 16);
 
         // The ring is the badge's face, standing in for the avatar an osekai-style card
         // would carry: this app stores progress, not profile data.
         Ring(sb, 90, 96, 44, 11, s.PassedPercent, p, o.Accent, 26, 13);
-        Text(sb, 90, 166, "osu!PersonalTracker", p.Muted, 10, Mono, anchor: "middle", spacing: 0.02);
+        Text(sb, 90, 168, "osu!PersonalTracker", p.Muted, 11, Display, anchor: "middle");
         if (s.UserId > 0)
-            Text(sb, 90, 182, $"#{s.UserId}", p.Muted, 9.5, Mono, anchor: "middle", opacity: 0.75);
+            Text(sb, 90, 184, $"#{s.UserId}", p.Muted, 10, Mono, anchor: "middle");
 
         const int x0 = 168, x1 = 848, colW = x1 - x0;
 
-        var scope = s.Mode is null ? "ALL MODES" : BadgePalette.ModeName(s.Mode.Value).ToUpperInvariant();
-        Text(sb, x0, 40, $"{scope} · RANKED + APPROVED", p.Muted, 10, Mono, spacing: 0.11);
-        Text(sb, x1, 40, $"UPDATED {s.UpdatedOn}", p.Muted, 10, Mono, anchor: "end", spacing: 0.08, opacity: 0.8);
+        var scope = s.Mode is null ? "All modes" : BadgePalette.ModeName(s.Mode.Value);
+        Text(sb, x0, 40, $"{scope} · ranked and approved", p.Muted, 12, Display);
+        Text(sb, x1, 40, $"Updated {s.UpdatedOn}", p.Muted, 11, Mono, anchor: "end");
 
         // One <text> with two tspans rather than two <text> elements: the suffix has to
         // start immediately after a number whose rendered width is unknown here.
         sb.Append(CultureInfo.InvariantCulture,
-            $"<text x=\"{x0}\" y=\"78\" font-family=\"{Display}\"><tspan font-size=\"28\" font-weight=\"700\" fill=\"{p.Ink}\">{N(s.Passed)}</tspan><tspan font-size=\"13\" fill=\"{p.Muted}\"> / {N(s.Total)} passed · {P(s.PassedPercent)}%</tspan></text>");
+            $"<text x=\"{x0}\" y=\"78\" font-family=\"{Display}\"><tspan font-size=\"28\" font-weight=\"600\" fill=\"{p.Ink}\">{N(s.Passed)}</tspan><tspan font-size=\"14\" fill=\"{p.Muted}\"> / {N(s.Total)} passed · {P(s.PassedPercent)}%</tspan></text>");
 
         if (s.RecentPasses > 0)
-            Text(sb, x1, 78, $"+{N(s.RecentPasses)} in 30d", o.Accent, 12, Mono, anchor: "end", weight: 700);
+            Text(sb, x1, 78, $"+{N(s.RecentPasses)} in 30 days", RecentInk(p, o), 12, Mono, anchor: "end", weight: 500);
 
         Bar(sb, x0, 90, colW, 12, s, p, o.Accent, "bcb");
         Legend(sb, x0, 124, colW, s, p, o.Accent);
@@ -72,16 +74,16 @@ public static class BadgeRenderer
         var p = BadgePalette.For(o.Theme);
         var sb = new StringBuilder(2048);
 
-        Open(sb, w, h, p, o, 12);
+        Open(sb, w, h, p, 12);
         Ring(sb, 50, 46, 24, 7, s.PassedPercent, p, o.Accent, 15, 8, showCaption: false);
 
         const int x0 = 96, x1 = 856, colW = x1 - x0;
         var scope = s.Mode is null ? "ranked maps" : BadgePalette.ModeName(s.Mode.Value) + " maps";
 
         sb.Append(CultureInfo.InvariantCulture,
-            $"<text x=\"{x0}\" y=\"38\" font-family=\"{Display}\"><tspan font-size=\"19\" font-weight=\"700\" fill=\"{p.Ink}\">{N(s.Passed)}</tspan><tspan font-size=\"11.5\" fill=\"{p.Muted}\"> / {N(s.Total)} {X(scope)} passed · {P(s.PassedPercent)}%</tspan></text>");
+            $"<text x=\"{x0}\" y=\"38\" font-family=\"{Display}\"><tspan font-size=\"20\" font-weight=\"600\" fill=\"{p.Ink}\">{N(s.Passed)}</tspan><tspan font-size=\"12\" fill=\"{p.Muted}\"> / {N(s.Total)} {X(scope)} passed · {P(s.PassedPercent)}%</tspan></text>");
 
-        Text(sb, x1, 38, "OSU!PERSONALTRACKER", p.Muted, 9.5, Mono, anchor: "end", spacing: 0.1, opacity: 0.8);
+        Text(sb, x1, 38, "osu!PersonalTracker", p.Muted, 11, Display, anchor: "end");
 
         Bar(sb, x0, 50, colW, 10, s, p, o.Accent, "bcs");
         Legend(sb, x0, 80, colW, s, p, o.Accent, size: 10);
@@ -91,28 +93,28 @@ public static class BadgeRenderer
 
     // ---- shared pieces -------------------------------------------------------------
 
-    private static void Open(StringBuilder sb, int w, int h, BadgePalette p, BadgeOptions o, double radius)
+    private static void Open(StringBuilder sb, int w, int h, BadgePalette p, double radius)
     {
-        var glowX = o.Layout == BadgeLayout.Slim ? 50 : 90;
-        var glowY = o.Layout == BadgeLayout.Slim ? 46 : 96;
-
         sb.Append(CultureInfo.InvariantCulture,
             $"<?xml version=\"1.0\" encoding=\"UTF-8\"?><svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{w}\" height=\"{h}\" viewBox=\"0 0 {w} {h}\" role=\"img\" aria-label=\"osu!PersonalTracker completion badge\">");
 
+        // A flat card and a hairline. The accent used to wash out from behind the ring as a
+        // radial glow and run down the left edge as a stripe; now it lives only where it
+        // counts passes, so the ring and the bar are the one bright thing on the card.
         sb.Append(CultureInfo.InvariantCulture,
-            $"<defs><clipPath id=\"card\"><rect x=\"0\" y=\"0\" width=\"{w}\" height=\"{h}\" rx=\"{F(radius)}\"/></clipPath>" +
-            $"<radialGradient id=\"glow\" cx=\"0\" cy=\"0\" r=\"1\" gradientUnits=\"userSpaceOnUse\" gradientTransform=\"translate({glowX} {glowY}) scale({F(h * 1.6)})\">" +
-            $"<stop offset=\"0\" stop-color=\"{o.Accent}\" stop-opacity=\"0.20\"/><stop offset=\"1\" stop-color=\"{o.Accent}\" stop-opacity=\"0\"/></radialGradient></defs>");
-
-        sb.Append(CultureInfo.InvariantCulture,
-            $"<g clip-path=\"url(#card)\"><rect x=\"0\" y=\"0\" width=\"{w}\" height=\"{h}\" fill=\"{p.Card}\"/>" +
-            $"<rect x=\"0\" y=\"0\" width=\"{w}\" height=\"{h}\" fill=\"url(#glow)\"/>" +
-            $"<rect x=\"0\" y=\"0\" width=\"4\" height=\"{h}\" fill=\"{o.Accent}\"/></g>");
+            $"<rect x=\"0\" y=\"0\" width=\"{w}\" height=\"{h}\" rx=\"{F(radius)}\" fill=\"{p.Card}\"/>");
 
         // Stroke last and inset by half a pixel, or the rounded edge smears at 1x.
         sb.Append(CultureInfo.InvariantCulture,
-            $"<rect x=\"0.5\" y=\"0.5\" width=\"{w - 1}\" height=\"{h - 1}\" rx=\"{F(radius)}\" fill=\"none\" stroke=\"{p.Line}\" stroke-width=\"1\"/>");
+            $"<rect x=\"0.5\" y=\"0.5\" width=\"{w - 1}\" height=\"{h - 1}\" rx=\"{F(radius - 0.5)}\" fill=\"none\" stroke=\"{p.Line}\" stroke-width=\"1\"/>");
     }
+
+    /// <summary>
+    /// The accent is a fill colour first. As small text on the light card most mode
+    /// colours land near 3:1, so there the figure takes the ink instead.
+    /// </summary>
+    private static string RecentInk(BadgePalette p, BadgeOptions o) =>
+        o.Theme == BadgeTheme.Light ? p.Ink : o.Accent;
 
     private static string Close(StringBuilder sb) => sb.Append("</svg>").ToString();
 
@@ -135,10 +137,10 @@ public static class BadgeRenderer
         var baseline = showCaption ? cy + size * 0.22 : cy + size * 0.36;
 
         sb.Append(CultureInfo.InvariantCulture,
-            $"<text x=\"{F(cx)}\" y=\"{F(baseline)}\" text-anchor=\"middle\" font-family=\"{Display}\" font-weight=\"700\" font-size=\"{F(size)}\" fill=\"{p.Ink}\">{label}<tspan font-size=\"{F(capSize)}\" fill=\"{p.Muted}\">%</tspan></text>");
+            $"<text x=\"{F(cx)}\" y=\"{F(baseline)}\" text-anchor=\"middle\" font-family=\"{Display}\" font-weight=\"600\" font-size=\"{F(size)}\" fill=\"{p.Ink}\">{label}<tspan font-size=\"{F(capSize)}\" fill=\"{p.Muted}\">%</tspan></text>");
 
         if (showCaption)
-            Text(sb, cx, baseline + capSize + 5, "PASSED", p.Muted, 8.5, Mono, anchor: "middle", spacing: 0.16);
+            Text(sb, cx, baseline + capSize + 4, "passed", p.Muted, 11, Display, anchor: "middle");
     }
 
     /// <summary>Passed / attempted / untouched, clipped into one rounded track.</summary>
@@ -163,7 +165,7 @@ public static class BadgeRenderer
     }
 
     private static void Legend(StringBuilder sb, double x, double y, double w,
-        BadgeSnapshot s, BadgePalette p, string accent, double size = 10.5)
+        BadgeSnapshot s, BadgePalette p, string accent, double size = 11)
     {
         var step = w / 3;
         Chip(sb, x, y, accent, $"Passed {N(s.Passed)}", p, size);
@@ -179,7 +181,7 @@ public static class BadgeRenderer
         var outline = colour == p.Alt ? $" stroke=\"{p.Line}\" stroke-width=\"1\"" : "";
         sb.Append(CultureInfo.InvariantCulture,
             $"<rect x=\"{F(x)}\" y=\"{F(y - 8)}\" width=\"8\" height=\"8\" rx=\"2\" fill=\"{colour}\"{outline}/>");
-        Text(sb, x + 14, y, label, p.Muted, size, Mono);
+        Text(sb, x + 16, y, label, p.Muted, size, Mono);
     }
 
     /// <summary>Per-mode strip on the combined badge: name, pass rate, mini bar.</summary>
@@ -194,11 +196,11 @@ public static class BadgeRenderer
             var r = rows[i];
             var cx = x + cw * i;
 
-            Text(sb, cx, 160, BadgePalette.ModeShort(r.Mode).ToUpperInvariant(), p.Muted, 9.5, Mono, spacing: 0.12);
+            Text(sb, cx, 160, BadgePalette.ModeShort(r.Mode), p.Muted, 12, Display);
             sb.Append(CultureInfo.InvariantCulture,
-                $"<text x=\"{F(cx)}\" y=\"180\" font-family=\"{Display}\"><tspan font-size=\"15\" font-weight=\"700\" fill=\"{p.Ink}\">{P(r.PassedPercent)}</tspan>" +
-                $"<tspan font-size=\"10\" fill=\"{p.Muted}\">% · {N(r.Passed)}/{N(r.Total)}</tspan></text>");
-            MiniBar(sb, cx, 188, cw - 18, r.PassedPercent, p, BadgePalette.ModeColour(r.Mode));
+                $"<text x=\"{F(cx)}\" y=\"180\" font-family=\"{Display}\"><tspan font-size=\"16\" font-weight=\"600\" fill=\"{p.Ink}\">{P(r.PassedPercent)}</tspan>" +
+                $"<tspan font-size=\"11\" fill=\"{p.Muted}\">% · {N(r.Passed)}/{N(r.Total)}</tspan></text>");
+            MiniBar(sb, cx, 188, cw - 24, r.PassedPercent, p, BadgePalette.ModeColour(r.Mode));
         }
     }
 
@@ -214,11 +216,11 @@ public static class BadgeRenderer
             var cx = x + cw * i;
             var pct = b.Total == 0 ? 0 : b.Passed * 100.0 / b.Total;
 
-            Text(sb, cx, 160, b.Label, p.Muted, 9.5, Mono, spacing: 0.04);
+            Text(sb, cx, 160, b.Label, p.Muted, 11, Mono);
             sb.Append(CultureInfo.InvariantCulture,
-                $"<text x=\"{F(cx)}\" y=\"180\" font-family=\"{Display}\"><tspan font-size=\"14\" font-weight=\"700\" fill=\"{(b.Total == 0 ? p.Muted : p.Ink)}\">{(b.Total == 0 ? "—" : P(pct))}</tspan>" +
-                $"<tspan font-size=\"9.5\" fill=\"{p.Muted}\">{(b.Total == 0 ? "" : "%")}</tspan></text>");
-            MiniBar(sb, cx, 188, cw - 14, pct, p, accent);
+                $"<text x=\"{F(cx)}\" y=\"180\" font-family=\"{Display}\"><tspan font-size=\"16\" font-weight=\"600\" fill=\"{(b.Total == 0 ? p.Muted : p.Ink)}\">{(b.Total == 0 ? "—" : P(pct))}</tspan>" +
+                $"<tspan font-size=\"11\" fill=\"{p.Muted}\">{(b.Total == 0 ? "" : "%")}</tspan></text>");
+            MiniBar(sb, cx, 188, cw - 16, pct, p, accent);
         }
     }
 
@@ -226,12 +228,12 @@ public static class BadgeRenderer
         BadgePalette p, string colour)
     {
         sb.Append(CultureInfo.InvariantCulture,
-            $"<rect x=\"{F(x)}\" y=\"{F(y)}\" width=\"{F(w)}\" height=\"3\" rx=\"1.5\" fill=\"{p.Alt}\"/>");
+            $"<rect x=\"{F(x)}\" y=\"{F(y)}\" width=\"{F(w)}\" height=\"4\" rx=\"2\" fill=\"{p.Alt}\"/>");
 
         var fill = w * Math.Clamp(percent, 0, 100) / 100.0;
         if (fill > 0)
             sb.Append(CultureInfo.InvariantCulture,
-                $"<rect x=\"{F(x)}\" y=\"{F(y)}\" width=\"{F(Math.Max(fill, 2))}\" height=\"3\" rx=\"1.5\" fill=\"{colour}\"/>");
+                $"<rect x=\"{F(x)}\" y=\"{F(y)}\" width=\"{F(Math.Max(fill, 2))}\" height=\"4\" rx=\"2\" fill=\"{colour}\"/>");
     }
 
     private static void Text(StringBuilder sb, double x, double y, string value, string fill,

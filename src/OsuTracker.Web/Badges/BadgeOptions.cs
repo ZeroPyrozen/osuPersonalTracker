@@ -85,10 +85,10 @@ public sealed record BadgePalette(
     string Card, string Alt, string Line, string Ink, string Muted, string Warn)
 {
     public static readonly BadgePalette Dark =
-        new("#1C1826", "#2A2436", "#322B42", "#EDE9F5", "#948CA8", "#E3A93C");
+        new("#1B1A1E", "#323136", "#302F34", "#ECEBEE", "#929097", "#E3A93C");
 
     public static readonly BadgePalette Light =
-        new("#FFFFFF", "#EAE6F1", "#DCD6E6", "#221C2E", "#6E6683", "#C08420");
+        new("#FFFFFF", "#E9E8EA", "#DAD8DC", "#201F23", "#6C6A71", "#C08420");
 
     public static BadgePalette For(BadgeTheme t) => t == BadgeTheme.Light ? Light : Dark;
 
