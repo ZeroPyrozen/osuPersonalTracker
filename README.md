@@ -137,18 +137,29 @@ date on its own:
 
 ```bash
 dotnet run -- sync recent       # every few hours
-dotnet run -- sync playcounts   # daily
+dotnet run -- sync daily        # daily
 dotnet run -- sync catalog      # monthly
 ```
 
 `sync recent` is four requests — one per mode — covering the last 24 hours. osu! only
 ever returns your newest 100 passes per mode, so run it more often than you could pass
-100 maps in one mode — every few hours is plenty. A pass that falls out of that window
-before a poll sees it is not recorded.
+100 maps in one mode — every few hours is plenty.
 
-It asks for passes only, though. A map you play without passing reaches the tracker
-through `sync playcounts` alone; skip that, and the map keeps counting as Untouched
-rather than Attempted. `sync catalog` picks up newly ranked maps.
+`sync daily` is the safety net under it, and runs three steps in order:
+
+1. `catalog-new` reads the newest ranked sets, so a map ranked since the last full
+   sweep is counted without waiting for the month to turn.
+2. `playcounts` refreshes what you have played. A map you play without passing reaches
+   the tracker this way alone.
+3. `scores` asks osu! about every played, unpassed map whose playcount has risen since
+   it was last checked — usually a handful of requests. That recovers any pass the
+   recent poll missed: one made while the machine was off, or on a map that was not in
+   the catalogue yet.
+
+The first `sync daily` after upgrading re-checks every map you have attempted without
+passing, which can take a couple of hours; after that it only follows new plays.
+
+`sync catalog` is still the only job that notices a map *leaving* the ranked catalogue.
 
 `dotnet run -- sync status` shows job state and current progress without fetching
 anything.

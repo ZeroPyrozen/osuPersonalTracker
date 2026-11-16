@@ -133,6 +133,9 @@ namespace OsuTracker.Web.Data.Migrations
                     b.Property<long>("BeatmapId")
                         .HasColumnType("INTEGER");
 
+                    b.Property<int?>("CheckedCount")
+                        .HasColumnType("INTEGER");
+
                     b.Property<int>("Count")
                         .HasColumnType("INTEGER");
 

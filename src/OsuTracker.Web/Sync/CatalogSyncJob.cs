@@ -173,6 +173,91 @@ public sealed class CatalogSyncJob(
         }
     }
 
+    public const string TopUpJobName = "CatalogTopUp";
+
+    /// <summary>
+    /// Five pages is 250 sets. Measured in November 2026, 150 sets spanned eight days of
+    /// rankings, so this covers about two weeks for a job that runs daily.
+    /// </summary>
+    public const int TopUpPages = 5;
+
+    /// <summary>
+    /// Reads only the newest ranked sets. The full sweep is ~1,100 requests and runs
+    /// monthly, and until it does a map ranked since the last one is not in the catalogue:
+    /// its plays match nothing and a pass on it is dropped by the recent-scores poll.
+    ///
+    /// Additive only — it upserts what it sees and never reconciles, since a few pages say
+    /// nothing about what has left. It keeps its own job row and no cursor, so it cannot
+    /// disturb a full sweep that is paused part-way.
+    /// </summary>
+    public async Task RunNewestAsync(int pages, CancellationToken ct)
+    {
+        var now = DateTimeOffset.UtcNow;
+        await MarkTopUpAsync(SyncJobState.Running, null, 0);
+
+        var totalSets = 0;
+        var totalMaps = 0;
+        try
+        {
+            string? cursor = null;
+            for (var page = 0; page < pages; page++)
+            {
+                var url = "/beatmapsets/search?s=ranked&sort=ranked_desc"
+                          + (cursor is null ? "" : $"&cursor_string={Uri.EscapeDataString(cursor)}");
+
+                using var doc = await api.GetAsync(url, ct)
+                    ?? throw new HttpRequestException("Catalogue search returned 404.", null, HttpStatusCode.NotFound);
+
+                var root = doc.RootElement;
+                if (root.ValueKind != JsonValueKind.Object
+                    || !root.TryGetProperty("beatmapsets", out var sets)
+                    || sets.ValueKind != JsonValueKind.Array)
+                    throw new JsonException("Catalogue search response had no beatmapsets array.");
+
+                if (sets.GetArrayLength() == 0) break;
+
+                var (s, m) = await UpsertPageAsync(sets, now, ct);
+                totalSets += s;
+                totalMaps += m;
+
+                cursor = root.TryGetProperty("cursor_string", out var cs) && cs.ValueKind == JsonValueKind.String
+                    ? cs.GetString()
+                    : null;
+                if (cursor is null) break;
+            }
+
+            await MarkTopUpAsync(SyncJobState.Completed, null, totalSets);
+            log.LogInformation("Catalog top-up complete: {Sets} newest sets, {Maps} difficulties", totalSets, totalMaps);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // Nothing to resume: the next run reads the same newest pages again.
+            await MarkTopUpAsync(SyncJobState.Paused, null, totalSets);
+            log.LogWarning("Catalog top-up cancelled — the next run covers the same pages");
+        }
+        catch (Exception ex)
+        {
+            log.LogError(ex, "Catalog top-up failed");
+            await MarkTopUpAsync(SyncJobState.Failed, SyncError.Describe(ex), totalSets);
+            throw;
+        }
+    }
+
+    /// <summary>Not cancellable, for the same reason as MarkAsync below.</summary>
+    private async Task MarkTopUpAsync(SyncJobState state, string? error, int sets)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync();
+        var j = await db.SyncJobs.FindAsync([TopUpJobName]);
+        if (j is null) { j = new SyncJob { Name = TopUpJobName }; db.SyncJobs.Add(j); }
+        j.State = state;
+        j.Error = error;
+        j.ItemsDone = sets;
+        j.LastRunAt = DateTimeOffset.UtcNow;
+        if (state == SyncJobState.Running) j.RunStartedAt = DateTimeOffset.UtcNow;
+        if (state == SyncJobState.Completed) j.LastSuccessAt = DateTimeOffset.UtcNow;
+        await db.SaveChangesAsync();
+    }
+
     private async Task<(int Sets, int Maps)> UpsertPageAsync(JsonElement sets, DateTimeOffset runStart, CancellationToken ct)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct);

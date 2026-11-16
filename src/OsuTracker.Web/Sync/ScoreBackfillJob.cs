@@ -11,6 +11,12 @@ namespace OsuTracker.Web.Sync;
 /// catalogue and your playcounts. Anything outside that intersection is Untouched by
 /// definition and is never requested, which is what turns a 215,000-request scan into
 /// a 15,854-request one.
+///
+/// It is also the safety net under the recent-scores poll, which only ever sees the last
+/// 24 hours and only maps already in the catalogue. Each fetch records the playcount it
+/// was made at, and a map comes back into the queue when that count rises without a
+/// counted pass on file — so a daily run costs one request per map played since
+/// yesterday, and recovers whatever the poll missed while the host was down.
 /// </summary>
 public sealed class ScoreBackfillJob(
     OsuApiClient api,
@@ -83,8 +89,8 @@ public sealed class ScoreBackfillJob(
                 catch (Exception ex) when (!ct.IsCancellationRequested)
                 {
                     // A single unlucky map must not end a multi-thousand-map run. The map
-                    // simply stays unfetched and will be picked up by the next pass, since
-                    // the queue excludes only maps that already have a score row.
+                    // simply stays unchecked and will be picked up by the next pass, since
+                    // only an answered request marks a map as checked.
                     errors++;
                     if (++consecutiveErrors >= MaxConsecutiveErrors) throw;
 
@@ -152,11 +158,15 @@ public sealed class ScoreBackfillJob(
 
     private enum Outcome { Pass, PreRankOnly, None }
 
-    private sealed record QueueItem(long BeatmapId, GameMode Mode, DateTimeOffset? RankedDate);
+    private sealed record QueueItem(long BeatmapId, GameMode Mode, DateTimeOffset? RankedDate, int PlayCount);
 
     /// <summary>
-    /// The queue is the catalogue intersected with playcounts, minus anything already
-    /// fetched. Ordered by id so the cursor is a simple "greater than" on resume.
+    /// The queue is the catalogue intersected with playcounts, minus anything with a
+    /// counted pass and anything not played since it was last checked. Ordered by id so
+    /// the cursor is a simple "greater than" on resume.
+    ///
+    /// A pre-rank-only row does not take a map out of the queue: it says the map was not
+    /// passed when last looked at, which is precisely the case worth looking at again.
     /// </summary>
     private async Task<List<QueueItem>> LoadQueueAsync(GameMode? onlyMode, long cursor, int? limit, CancellationToken ct)
     {
@@ -169,8 +179,9 @@ public sealed class ScoreBackfillJob(
             where (b.Status == BeatmapStatus.Ranked || b.Status == BeatmapStatus.Approved)
                   && p.Count > 0
                   && b.Id > cursor
-                  && !db.Scores.Any(s => s.BeatmapId == b.Id)
-            select new { b.Id, b.Mode, bs.RankedDate };
+                  && (p.CheckedCount == null || p.Count > p.CheckedCount)
+                  && !db.Scores.Any(s => s.BeatmapId == p.BeatmapId && s.CountsAsPass)
+            select new { b.Id, b.Mode, bs.RankedDate, p.Count };
 
         if (onlyMode is not null) q = q.Where(x => x.Mode == onlyMode);
 
@@ -179,7 +190,7 @@ public sealed class ScoreBackfillJob(
             ? await ordered.Take(limit.Value).ToListAsync(ct)
             : await ordered.ToListAsync(ct);
 
-        return rows.Select(r => new QueueItem(r.Id, r.Mode, r.RankedDate)).ToList();
+        return rows.Select(r => new QueueItem(r.Id, r.Mode, r.RankedDate, r.Count)).ToList();
     }
 
     private async Task<Outcome> FetchAndStoreAsync(QueueItem item, CancellationToken ct)
@@ -192,10 +203,16 @@ public sealed class ScoreBackfillJob(
             $"/beatmaps/{item.BeatmapId}/scores/users/{api.UserId}/all?mode={slug}", ct)
             ?? await api.GetAsync($"/beatmaps/{item.BeatmapId}/scores/users/{api.UserId}?mode={slug}", ct);
 
-        if (doc is null) return Outcome.None;
-
-        var scores = ExtractScores(doc.RootElement);
-        if (scores.Count == 0) return Outcome.None;
+        var scores = doc is null ? [] : ExtractScores(doc.RootElement);
+        if (scores.Count == 0)
+        {
+            // An answer, just an empty one. Written down so the map is not asked about
+            // again until it has been played again.
+            await using var none = await dbFactory.CreateDbContextAsync(ct);
+            await MarkCheckedAsync(none, item, ct);
+            await none.SaveChangesAsync(ct);
+            return Outcome.None;
+        }
 
         // Rule 5, decided once, here. A pass qualifies only if it happened on or after
         // the set was ranked; a null rank date can never qualify (there are none today,
@@ -218,24 +235,42 @@ public sealed class ScoreBackfillJob(
 
         await using (var db = await dbFactory.CreateDbContextAsync(ct))
         {
-            db.Scores.Add(new Score
+            // A re-check lands on the pre-rank-only row an earlier run left behind, so
+            // this is an upsert. The queue never offers a map with a counted pass.
+            var row = await db.Scores.FindAsync([item.BeatmapId], ct);
+            if (row is null)
             {
-                BeatmapId = item.BeatmapId,
-                ScoreId = chosen.ScoreId,
-                PlayedAt = passedAt,
-                PlayedAtUnix = passedAt.ToUnixTimeSeconds(),
-                FetchedAt = DateTimeOffset.UtcNow,
-                CountsAsPass = countsAsPass,
-                Grade = chosen.Grade,
-                Accuracy = chosen.Accuracy,
-                MaxCombo = chosen.MaxCombo,
-                Mods = chosen.Mods,
-                IsLazer = chosen.IsLazer
-            });
+                row = new Score { BeatmapId = item.BeatmapId };
+                db.Scores.Add(row);
+            }
+
+            row.ScoreId = chosen.ScoreId;
+            row.PlayedAt = passedAt;
+            row.PlayedAtUnix = passedAt.ToUnixTimeSeconds();
+            row.FetchedAt = DateTimeOffset.UtcNow;
+            row.CountsAsPass = countsAsPass;
+            row.Grade = chosen.Grade;
+            row.Accuracy = chosen.Accuracy;
+            row.MaxCombo = chosen.MaxCombo;
+            row.Mods = chosen.Mods;
+            row.IsLazer = chosen.IsLazer;
+
+            // Same save as the score, so a map is never marked checked without its result.
+            await MarkCheckedAsync(db, item, ct);
             await db.SaveChangesAsync(ct);
         }
 
         return countsAsPass ? Outcome.Pass : Outcome.PreRankOnly;
+    }
+
+    /// <summary>
+    /// Records the playcount the queue was built from, not whatever it reads now: a play
+    /// that landed between the two has not been asked about, and must bring the map back.
+    /// </summary>
+    private static async Task MarkCheckedAsync(TrackerDbContext db, QueueItem item, CancellationToken ct)
+    {
+        var plays = await db.PlayCounts.FindAsync([item.BeatmapId], ct);
+        if (plays is not null) plays.CheckedCount = item.PlayCount;
     }
 
     private sealed record ParsedScore(

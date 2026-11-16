@@ -19,7 +19,8 @@ public sealed record BadgeSnapshot(
     int RecentPasses,
     IReadOnlyList<ModeProgress> Modes,
     IReadOnlyList<StarBand> Bands,
-    DateTimeOffset GeneratedAt)
+    DateTimeOffset GeneratedAt,
+    DateTimeOffset? LastSyncedAt = null)
 {
     public double PassedPercent => Total == 0 ? 0 : Passed * 100.0 / Total;
     public double PlayedPercent => Total == 0 ? 0 : (Passed + Attempted) * 100.0 / Total;
@@ -27,8 +28,12 @@ public sealed record BadgeSnapshot(
     /// <summary>
     /// The date the banner prints, in the invariant culture: formatted in the server's own,
     /// "yyyy" counts years in that culture's calendar, and a th-TH host printed 2569.
+    ///
+    /// It is the day a sync last succeeded, not the day the badge was drawn. It used to be
+    /// the latter, so a tracker whose jobs had been failing for three months still stamped
+    /// every badge "updated today". Null until any job has completed once.
     /// </summary>
-    public string UpdatedOn => GeneratedAt.UtcDateTime.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+    public string? UpdatedOn => LastSyncedAt?.UtcDateTime.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
 
     /// <summary>
     /// Only what is drawn goes in, so an ETag survives an unrelated sync but changes the
@@ -59,7 +64,7 @@ public sealed class BadgeService(ProgressQueryService progress, IOptions<OsuApiO
     private static int Key(GameMode? mode) => mode is null ? -1 : (int)mode.Value;
 
     /// <summary>Rendering version — bump it when the SVG changes, so cached ETags miss.</summary>
-    public const string RenderVersion = "2";
+    public const string RenderVersion = "3";
 
     public async Task<BadgeSnapshot> GetSnapshotAsync(GameMode? mode, bool force = false, CancellationToken ct = default)
     {
@@ -96,6 +101,7 @@ public sealed class BadgeService(ProgressQueryService progress, IOptions<OsuApiO
     private async Task<BadgeSnapshot> BuildAsync(GameMode? mode, CancellationToken ct)
     {
         var modes = await progress.GetAllModesAsync(ct);
+        var synced = await progress.GetLastSyncAsync(ct);
 
         if (mode is null)
         {
@@ -107,7 +113,7 @@ public sealed class BadgeService(ProgressQueryService progress, IOptions<OsuApiO
                 api.Value.UserId, null,
                 modes.Sum(m => m.Total), modes.Sum(m => m.Passed),
                 modes.Sum(m => m.Attempted), modes.Sum(m => m.Untouched),
-                recent, modes, [], DateTimeOffset.UtcNow);
+                recent, modes, [], DateTimeOffset.UtcNow, synced);
         }
 
         var row = modes.First(m => m.Mode == mode.Value);
@@ -116,7 +122,7 @@ public sealed class BadgeService(ProgressQueryService progress, IOptions<OsuApiO
 
         return new BadgeSnapshot(
             api.Value.UserId, mode, row.Total, row.Passed, row.Attempted, row.Untouched,
-            passes, modes, bands, DateTimeOffset.UtcNow);
+            passes, modes, bands, DateTimeOffset.UtcNow, synced);
     }
 
     /// <summary>

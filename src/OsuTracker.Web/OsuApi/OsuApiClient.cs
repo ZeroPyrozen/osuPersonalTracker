@@ -54,7 +54,11 @@ public sealed class OsuApiClient(
 
                 if ((int)res.StatusCode == 429)
                 {
-                    var wait = TimeSpan.FromSeconds(Math.Min(60, 10 * attempt));
+                    // The server's own figure when it gives one, kept inside sane bounds so a
+                    // stray header can neither spin the loop nor park a job for an hour.
+                    var wait = res.Headers.RetryAfter?.Delta is { } asked
+                        ? TimeSpan.FromSeconds(Math.Clamp(asked.TotalSeconds, 1, 120))
+                        : TimeSpan.FromSeconds(Math.Min(60, 10 * attempt));
                     log.LogWarning("429 on {Path} — pausing {Seconds}s", path, wait.TotalSeconds);
                     await limiter.PenaliseAsync(wait, ct);
                     if (attempt < MaxAttempts) continue;
