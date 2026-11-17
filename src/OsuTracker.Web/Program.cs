@@ -109,9 +109,15 @@ builder.Services.AddRateLimiter(o =>
 
 // ---- data -------------------------------------------------------------------
 // WAL so a long sync never blocks the UI from reading.
-var dbPath = Path.Combine(builder.Environment.ContentRootPath, "tracker.db");
+//
+// No Cache=Shared. Shared-cache mode makes every connection in the process share one
+// page cache and take table-level locks against each other, which surfaces as
+// SQLITE_LOCKED ("database table is locked") — an error no busy timeout retries. WAL
+// already gives readers and the writer what shared cache was once used for, and the
+// SQLite documentation discourages combining the two.
+var dbPath = HostingSetup.DatabasePath(builder.Configuration, builder.Environment.ContentRootPath);
 builder.Services.AddDbContextFactory<TrackerDbContext>(o =>
-    o.UseSqlite($"Data Source={dbPath};Cache=Shared;Pooling=True"));
+    o.UseSqlite($"Data Source={dbPath};Pooling=True"));
 
 // ---- osu! api ---------------------------------------------------------------
 builder.Services.Configure<OsuApiOptions>(builder.Configuration.GetSection(OsuApiOptions.SectionName));
@@ -167,7 +173,9 @@ if (!app.Environment.IsDevelopment())
     app.UseHsts();
 }
 
-app.UseHttpsRedirection();
+// Only where there is an HTTPS port to send people to. Behind the Funnel, TLS ends at
+// the proxy and this process speaks plain HTTP only.
+if (HostingSetup.HasHttpsEndpoint(app.Configuration)) app.UseHttpsRedirection();
 app.UseRateLimiter();
 app.UseAntiforgery();
 app.MapStaticAssets();

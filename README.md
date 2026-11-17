@@ -199,6 +199,13 @@ Your data lives in `src/OsuTracker.Web/tracker.db`, created automatically on fir
 It's gitignored, along with credentials and sync logs — nothing personal ends up in the
 repository.
 
+For a published copy, keep the database out of the app folder so a deploy can replace
+the binaries without stepping around it. Set `Tracker:DataDirectory` (as an environment
+variable, `Tracker__DataDirectory=/path/to/data`) and `tracker.db` is created there
+instead. To move an existing database, stop the app and every sync job, move
+`tracker.db` — along with `tracker.db-wal` and `tracker.db-shm` if they exist — and
+start again with the setting in place.
+
 The spike is kept for the record. It answered the two API questions the design depends
 on; you don't need it to run the tracker. See [spike/README.md](spike/README.md) if
 you're curious.
